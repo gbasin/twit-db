@@ -23,13 +23,22 @@ export async function createWindow() {
   });
 
   // Load the app
-  if (process.env.NODE_ENV === 'development') {
-    console.log('Loading app from dev server...');
-    await mainWindow.loadURL('http://localhost:3000');
-    mainWindow.webContents.openDevTools();
-  } else {
-    console.log('Loading app from built files...');
-    await mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+  try {
+    // During development (npm run dev), always use the dev server
+    const isDev = process.env.NODE_ENV === 'development' || process.argv.includes('--dev');
+    console.log('Development mode:', isDev);
+    
+    if (isDev) {
+      console.log('Loading app from dev server...');
+      await mainWindow.loadURL('http://localhost:3000');
+      mainWindow.webContents.openDevTools();
+    } else {
+      console.log('Loading app from built files...');
+      await mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+    }
+  } catch (error) {
+    console.error('Failed to load window:', error);
+    throw error;
   }
 
   mainWindow.on('closed', () => {
