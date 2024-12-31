@@ -4,22 +4,33 @@ import path from 'path';
 import { app } from 'electron';
 import fs from 'fs/promises';
 import crypto from 'crypto';
+import { execSync } from 'child_process';
 
 let isCollecting = false;
+let currentBrowserContext: any = null;
 
-// Get the user data directory for Chrome
-function getChromeUserDataDir() {
-  // Default Chrome profile locations by platform
-  const platform = process.platform;
-  const homeDir = app.getPath('home');
-  
-  switch (platform) {
-    case 'darwin': // macOS
-      return path.join(homeDir, 'Library', 'Application Support', 'Google', 'Chrome');
-    case 'win32': // Windows
-      return path.join(homeDir, 'AppData', 'Local', 'Google', 'Chrome', 'User Data');
-    default: // Linux and others
-      return path.join(homeDir, '.config', 'google-chrome');
+// Get the app's browser profile directory
+function getAppProfileDir() {
+  return path.join(app.getPath('userData'), 'browser-profile');
+}
+
+// Cleanup any existing browser sessions
+async function cleanupExistingSessions() {
+  if (currentBrowserContext) {
+    try {
+      await currentBrowserContext.close();
+    } catch (error) {
+      console.log('Error closing existing browser context:', error);
+    }
+    currentBrowserContext = null;
+  }
+
+  const profileDir = getAppProfileDir();
+  const lockFile = path.join(profileDir, 'SingletonLock');
+  try {
+    await fs.unlink(lockFile);
+  } catch (error) {
+    // Ignore if file doesn't exist
   }
 }
 
@@ -51,23 +62,115 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
     return;
   }
   isCollecting = true;
+  
   try {
     console.log(`Starting ${mode} collection...`);
     
-    // Use the actual Chrome profile directory
-    const userDataDir = getChromeUserDataDir();
-    const browserContext = await chromium.launchPersistentContext(userDataDir, {
-      headless: true,
+    // Use our app's dedicated profile directory
+    const profileDir = getAppProfileDir();
+    console.log('Using browser profile at:', profileDir);
+    
+    // Ensure profile directory exists and clean up any existing sessions
+    await fs.mkdir(profileDir, { recursive: true });
+    await cleanupExistingSessions();
+    
+    currentBrowserContext = await chromium.launchPersistentContext(profileDir, {
+      headless: false,
+      channel: 'chrome',
+      viewport: { width: 1280, height: 800 },
+      ignoreDefaultArgs: ['--enable-automation'],
+      args: [
+        '--disable-blink-features=AutomationControlled',
+        '--no-default-browser-check',
+        '--no-first-run',
+        '--no-startup-window'
+      ]
     });
 
-    const page = await browserContext.newPage();
+    console.log('Browser launched, creating new page...');
+    const page = await currentBrowserContext.newPage();
+    
+    // Ensure window is visible and focused
+    const window = page.mainFrame().page();
+    await window.bringToFront();
+    
+    console.log('Removing automation flags...');
+    await page.addInitScript(() => {
+      delete (window as any).navigator.webdriver;
+      // @ts-ignore
+      window.chrome = { runtime: {} };
+    });
+    
+    console.log('Navigating to Twitter...');
+    try {
+      await page.goto('https://twitter.com', {
+        waitUntil: 'networkidle',
+        timeout: 30000
+      });
+      console.log('Successfully loaded Twitter homepage');
+    } catch (error) {
+      console.error('Failed to load Twitter:', error);
+      throw error;
+    }
 
-    // For demonstration, let's just navigate to the "Likes" page of the user
-    // In a real scenario, you'd pass the user's handle or retrieve from settings
-    await page.goto('https://twitter.com/your_twitter_handle/likes', {
-      waitUntil: 'domcontentloaded'
+    // Check if we need to log in
+    console.log('Checking login status...');
+    const isLoggedIn = await page.evaluate(() => {
+      // Check for common elements that indicate we're logged in
+      return !document.querySelector('a[href="/login"]') && 
+             !document.querySelector('a[href="/i/flow/login"]') &&
+             !document.querySelector('[data-testid="loginButton"]');
     });
 
+    if (!isLoggedIn) {
+      console.log('Login required. Please log in to continue...');
+      
+      // Click the Sign in button
+      const signInButton = await page.getByTestId('loginButton');
+      if (signInButton) {
+        await signInButton.click();
+        await page.waitForLoadState('networkidle');
+      } else {
+        // Try clicking the Sign in link if button not found
+        const signInLink = await page.getByRole('link', { name: 'Sign in' });
+        if (signInLink) {
+          await signInLink.click();
+          await page.waitForLoadState('networkidle');
+        }
+      }
+
+      // Wait for successful login (when we can access the home feed)
+      await page.waitForFunction(() => {
+        return window.location.pathname === '/home' || 
+               document.querySelector('[data-testid="primaryColumn"]') !== null;
+      }, { timeout: 120000 }).catch(() => {
+        throw new Error('Login timeout - please try again');
+      });
+      console.log('Successfully logged in');
+    }
+
+    // Now navigate to likes
+    console.log('Navigating to likes page...');
+    await page.goto('https://twitter.com/home', {
+      waitUntil: 'networkidle',
+      timeout: 30000
+    });
+
+    // Click the Likes link in the sidebar
+    const likesLink = await page.getByRole('link', { name: 'Likes' });
+    if (likesLink) {
+      await likesLink.click();
+      await page.waitForLoadState('networkidle');
+    }
+
+    console.log('Waiting for content to load...');
+    // Wait for tweets to be visible
+    await page.waitForSelector('article', { timeout: 30000 }).catch(() => {
+      console.log('No articles found after timeout');
+    });
+    
+    console.log('Page loaded, looking for tweets...');
+    
     // We'll do a simple approach:
     // 1. Scroll a few times
     // 2. Extract tweets
@@ -78,7 +181,9 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
     let newHeight = -1;
     let scrollCount = mode === 'historical' ? 20 : 5; // Increase if you want more data
     
+    console.log(`Starting to scroll page (${scrollCount} times)...`);
     for (let i = 0; i < scrollCount; i++) {
+      console.log(`Scroll ${i + 1}/${scrollCount}`);
       await page.evaluate(() => {
         window.scrollBy(0, window.innerHeight);
       });
@@ -86,15 +191,16 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
       await page.waitForTimeout(2000);
       newHeight = await page.evaluate(() => document.body.scrollHeight);
       if (newHeight === previousHeight) {
-        // No new content
+        console.log('No new content after scroll, stopping...');
         break;
       }
       previousHeight = newHeight;
     }
 
+    console.log('Extracting tweets from page...');
     // Simple example of extracting tweet data from "article" elements
-    const tweets = await page.$$eval('article', (articles) => {
-      return articles.map((el) => {
+    const tweets = await page.$$eval('article', (articles: Element[]) => {
+      return articles.map((el: Element) => {
         // Extract basic tweet info
         const tweetId = el.querySelector('a[href*="/status/"]')?.getAttribute('href')?.split('/status/')[1] || '';
         const textContent = el.textContent || '';
@@ -143,13 +249,16 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
     });
 
     // Insert into DB
+    console.log(`Found ${tweets.length} tweets, saving to database...`);
+    let savedCount = 0;
     for (const tweet of tweets) {
       if (tweet.id) {
         // First insert the tweet
         await insertTweet(tweet);
-
-        // Then handle media if present
+        savedCount++;
+        
         if (tweet._media) {
+          console.log(`Processing media for tweet ${tweet.id}...`);
           // Handle images
           for (const image of tweet._media.images) {
             try {
@@ -199,9 +308,18 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
     }
 
     console.log(`Finished ${mode} collection. Collected ${tweets.length} tweets.`);
-    await browserContext.close();
+    await currentBrowserContext.close();
+    currentBrowserContext = null;
   } catch (error) {
     console.error("Collection error:", error);
+    if (currentBrowserContext) {
+      try {
+        await currentBrowserContext.close();
+      } catch (closeError) {
+        console.error("Error closing browser:", closeError);
+      }
+      currentBrowserContext = null;
+    }
   } finally {
     isCollecting = false;
   }
