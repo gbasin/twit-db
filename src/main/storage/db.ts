@@ -8,26 +8,121 @@ interface SearchFilters {
   author?: string;
 }
 
+let _db: any = null;
+
 export async function initDatabase() {
+  if (_db) {
+    return _db;
+  }
   const db = await open({
     filename: './data/db/tweets.db',
     driver: sqlite3.Database,
   });
+
+  // Create the tables if they don't exist already
   await db.exec(`
-    CREATE TABLE IF NOT EXISTS tweets (...);
-    CREATE TABLE IF NOT EXISTS media (...);
-    CREATE TABLE IF NOT EXISTS linked_content (...);
-    CREATE TABLE IF NOT EXISTS quote_tweets (...);
-    CREATE TABLE IF NOT EXISTS embeddings (...);
-    CREATE VIRTUAL TABLE IF NOT EXISTS tweets_fts USING fts5(...);
+    CREATE TABLE IF NOT EXISTS tweets (
+      id TEXT PRIMARY KEY,
+      html TEXT NOT NULL,
+      text_content TEXT NOT NULL,
+      author TEXT NOT NULL,
+      liked_at TIMESTAMP NOT NULL,
+      first_seen_at TIMESTAMP NOT NULL,
+      is_quote_tweet INTEGER DEFAULT 0,
+      has_media INTEGER DEFAULT 0,
+      has_links INTEGER DEFAULT 0,
+      is_deleted INTEGER DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS media (
+      id TEXT PRIMARY KEY,
+      tweet_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      local_path TEXT NOT NULL,
+      original_url TEXT NOT NULL,
+      downloaded_at TIMESTAMP NOT NULL,
+      FOREIGN KEY(tweet_id) REFERENCES tweets(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS linked_content (
+      id TEXT PRIMARY KEY,
+      tweet_id TEXT NOT NULL,
+      snapshot_path TEXT NOT NULL,
+      original_url TEXT NOT NULL,
+      captured_at TIMESTAMP NOT NULL,
+      FOREIGN KEY(tweet_id) REFERENCES tweets(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS quote_tweets (
+      parent_tweet_id TEXT NOT NULL,
+      quoted_tweet_id TEXT NOT NULL,
+      PRIMARY KEY(parent_tweet_id, quoted_tweet_id),
+      FOREIGN KEY(parent_tweet_id) REFERENCES tweets(id),
+      FOREIGN KEY(quoted_tweet_id) REFERENCES tweets(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS embeddings (
+      id TEXT PRIMARY KEY,
+      tweet_id TEXT NOT NULL,
+      embedding BLOB NOT NULL,
+      updated_at TIMESTAMP NOT NULL,
+      FOREIGN KEY(tweet_id) REFERENCES tweets(id)
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS tweets_fts USING fts5(
+      text_content,
+      author,
+      content='tweets',
+      content_rowid='id'
+    );
   `);
+
+  _db = db;
   return db;
+}
+
+export async function insertTweet(tweet: any) {
+  const db = await initDatabase();
+
+  await db.run(
+    `
+      INSERT OR REPLACE INTO tweets (id, html, text_content, author, liked_at, first_seen_at, is_quote_tweet, has_media, has_links, is_deleted)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      tweet.id,
+      tweet.html,
+      tweet.text_content,
+      tweet.author,
+      tweet.liked_at,
+      tweet.first_seen_at,
+      tweet.is_quote_tweet ? 1 : 0,
+      tweet.has_media ? 1 : 0,
+      tweet.has_links ? 1 : 0,
+      tweet.is_deleted ? 1 : 0
+    ]
+  );
+
+  // Insert into FTS table as well
+  await db.run(
+    `
+      INSERT INTO tweets_fts (rowid, text_content, author)
+      VALUES (
+        (SELECT rowid FROM tweets WHERE id = ?),
+        ?,
+        ?
+      )
+      ON CONFLICT(rowid) DO UPDATE SET
+        text_content = excluded.text_content,
+        author = excluded.author
+    `,
+    [tweet.id, tweet.text_content, tweet.author]
+  );
 }
 
 export async function searchTweets(query: string, filters: SearchFilters = {}) {
   const db = await initDatabase();
-  
-  // Build the WHERE clause based on filters
+
   const conditions: string[] = [];
   const params: any[] = [];
 
@@ -66,7 +161,6 @@ export async function searchTweets(query: string, filters: SearchFilters = {}) {
     ? `WHERE ${conditions.join(' AND ')}`
     : '';
 
-  // Execute the search query
   const results = await db.all(`
     SELECT tweets.*
     FROM tweets
@@ -74,7 +168,7 @@ export async function searchTweets(query: string, filters: SearchFilters = {}) {
     ${whereClause}
     ORDER BY liked_at DESC
     LIMIT 50
-  `, ...params);
+  `, params);
 
   return results;
 }

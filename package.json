@@ -1,24 +1,26 @@
 {
   "name": "twit-db",
   "version": "1.0.0",
+  "description": "Twitter Likes Archiver Desktop App",
   "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/gbasin/twit-db.git"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "Gary Basin",
+  "license": "MIT",
   "bugs": {
     "url": "https://github.com/gbasin/twit-db/issues"
   },
   "homepage": "https://github.com/gbasin/twit-db#readme",
-  "description": "",
+  "scripts": {
+    "dev": "concurrently \"vite --port 3000\" \"electron .\"",
+    "start": "electron .",
+    "build": "vite build",
+    "test": "jest"
+  },
+  "keywords": [],
   "dependencies": {
-    "3": "^2.1.0",
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
     "electron": "^33.2.1",
@@ -32,6 +34,14 @@
     "sqlite3": "^5.1.7",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.2",
-    "vite": "^6.0.6"
+    "vite": "^6.0.6",
+    "concurrently": "^8.2.1"
+  },
+  "devDependencies": {
+    "@types/electron-store": "^7.0.0",
+    "@types/jest": "^29.5.6",
+    "@types/node": "^20.6.4",
+    "@types/playwright": "^1.49.0",
+    "@types/sqlite3": "^3.1.8"
   }
 }
