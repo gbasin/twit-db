@@ -1,6 +1,5 @@
 # Twitter Likes Archive
 
-## Product Requirements Document
 Version 1.0 - December 2024
 
 ## Overview
