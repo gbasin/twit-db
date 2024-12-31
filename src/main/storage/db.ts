@@ -171,10 +171,8 @@ export async function insertTweet(tweet: any) {
   const db = await initDatabase();
 
   await db.run(
-    `
-      INSERT OR REPLACE INTO tweets (id, html, text_content, author, liked_at, first_seen_at, is_quote_tweet, has_media, has_links, is_deleted)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
+    `INSERT OR REPLACE INTO tweets (id, html, text_content, author, liked_at, first_seen_at, is_quote_tweet, has_media, has_links, is_deleted, card_type, card_data)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       tweet.id,
       tweet.html,
@@ -185,23 +183,16 @@ export async function insertTweet(tweet: any) {
       tweet.is_quote_tweet ? 1 : 0,
       tweet.has_media ? 1 : 0,
       tweet.has_links ? 1 : 0,
-      tweet.is_deleted ? 1 : 0
+      tweet.is_deleted ? 1 : 0,
+      tweet.card_type,
+      tweet.card_data
     ]
   );
 
-  // Insert into FTS table as well
+  // For FTS table, we need to delete first then insert because UPSERT isn't supported
+  await db.run('DELETE FROM tweets_fts WHERE rowid = ?', [tweet.id]);
   await db.run(
-    `
-      INSERT INTO tweets_fts (rowid, text_content, author)
-      VALUES (
-        (SELECT rowid FROM tweets WHERE id = ?),
-        ?,
-        ?
-      )
-      ON CONFLICT(rowid) DO UPDATE SET
-        text_content = excluded.text_content,
-        author = excluded.author
-    `,
+    'INSERT INTO tweets_fts (rowid, text_content, author) VALUES (?, ?, ?)',
     [tweet.id, tweet.text_content, tweet.author]
   );
 }

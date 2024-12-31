@@ -74,25 +74,57 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
     await fs.mkdir(profileDir, { recursive: true });
     await cleanupExistingSessions();
     
-    currentBrowserContext = await chromium.launchPersistentContext(profileDir, {
-      headless: false,
-      channel: 'chrome',
-      viewport: { width: 1280, height: 800 },
-      ignoreDefaultArgs: ['--enable-automation'],
-      args: [
-        '--disable-blink-features=AutomationControlled',
-        '--no-default-browser-check',
-        '--no-first-run',
-        '--no-startup-window'
-      ]
-    });
+    console.log('Launching browser...');
+    try {
+      currentBrowserContext = await chromium.launchPersistentContext(profileDir, {
+        headless: false,
+        viewport: { width: 1280, height: 800 },
+        ignoreDefaultArgs: ['--enable-automation'],
+        args: [
+          '--disable-blink-features=AutomationControlled',
+          '--no-default-browser-check',
+          '--no-first-run'
+        ],
+        logger: {
+          isEnabled: () => true,
+          log: (name, severity, message) => console.log(`Browser ${severity}: ${message}`)
+        }
+      }).catch(error => {
+        console.error('Failed to launch browser:', error);
+        throw error;
+      });
+    } catch (error) {
+      console.error('Error during browser launch:', error);
+      throw error;
+    }
+
+    if (!currentBrowserContext) {
+      throw new Error('Browser context is null after launch');
+    }
 
     console.log('Browser launched, creating new page...');
-    const page = await currentBrowserContext.newPage();
-    
+    let page;
+    try {
+      page = await currentBrowserContext.newPage();
+      console.log('Page created successfully');
+    } catch (error) {
+      console.error('Failed to create new page:', error);
+      throw error;
+    }
+
+    if (!page) {
+      throw new Error('Page is null after creation');
+    }
+
     // Ensure window is visible and focused
-    const window = page.mainFrame().page();
-    await window.bringToFront();
+    try {
+      console.log('Bringing window to front...');
+      await page.bringToFront();
+      console.log('Window should now be visible');
+    } catch (error) {
+      console.error('Failed to bring window to front:', error);
+      // Continue anyway as this is not critical
+    }
     
     console.log('Removing automation flags...');
     await page.addInitScript(() => {
@@ -104,9 +136,15 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
     console.log('Navigating to Twitter...');
     try {
       await page.goto('https://twitter.com', {
-        waitUntil: 'networkidle',
+        waitUntil: 'domcontentloaded',
         timeout: 30000
       });
+      
+      // Wait for either the login button or home feed to be visible
+      await page.waitForSelector('[data-testid="loginButton"], [data-testid="primaryColumn"]', {
+        timeout: 30000
+      });
+      
       console.log('Successfully loaded Twitter homepage');
     } catch (error) {
       console.error('Failed to load Twitter:', error);
@@ -116,53 +154,68 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
     // Check if we need to log in
     console.log('Checking login status...');
     const isLoggedIn = await page.evaluate(() => {
-      // Check for common elements that indicate we're logged in
-      return !document.querySelector('a[href="/login"]') && 
-             !document.querySelector('a[href="/i/flow/login"]') &&
-             !document.querySelector('[data-testid="loginButton"]');
+      return document.querySelector('[data-testid="primaryColumn"]') !== null;
     });
 
     if (!isLoggedIn) {
       console.log('Login required. Please log in to continue...');
       
       // Click the Sign in button
-      const signInButton = await page.getByTestId('loginButton');
-      if (signInButton) {
-        await signInButton.click();
-        await page.waitForLoadState('networkidle');
-      } else {
-        // Try clicking the Sign in link if button not found
-        const signInLink = await page.getByRole('link', { name: 'Sign in' });
-        if (signInLink) {
-          await signInLink.click();
-          await page.waitForLoadState('networkidle');
-        }
+      try {
+        await page.click('[data-testid="loginButton"]');
+        console.log('Clicked login button');
+        
+        // Wait for login form
+        await page.waitForSelector('input[autocomplete="username"]', { timeout: 10000 });
+        console.log('Login form visible');
+        
+        // Wait for user to complete login
+        await page.waitForSelector('[data-testid="primaryColumn"]', { 
+          timeout: 120000,
+          state: 'visible'
+        }).catch(() => {
+          throw new Error('Login timeout - please try again');
+        });
+        console.log('Successfully logged in');
+      } catch (error) {
+        console.error('Login process failed:', error);
+        throw error;
       }
+    }
 
-      // Wait for successful login (when we can access the home feed)
-      await page.waitForFunction(() => {
-        return window.location.pathname === '/home' || 
-               document.querySelector('[data-testid="primaryColumn"]') !== null;
-      }, { timeout: 120000 }).catch(() => {
-        throw new Error('Login timeout - please try again');
+    // After successful login, navigate to profile and then likes
+    console.log('Navigating to profile...');
+    try {
+      // Click the profile icon/link
+      await page.click('[data-testid="AppTabBar_Profile_Link"]');
+      await page.waitForSelector('[data-testid="primaryColumn"]', { timeout: 10000 });
+      
+      // Get the current profile URL which contains the username
+      const profileUrl = page.url();
+      const username = profileUrl.split('/').pop();
+      
+      if (!username) {
+        throw new Error('Could not determine username from profile URL');
+      }
+      
+      // Navigate directly to likes page
+      console.log('Navigating to likes page...');
+      await page.goto(`https://twitter.com/${username}/likes`, {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000
       });
-      console.log('Successfully logged in');
+      
+      // Wait for the likes feed to load
+      await page.waitForSelector('[data-testid="primaryColumn"]', { timeout: 10000 });
+      console.log('Likes page loaded');
+    } catch (error) {
+      console.error('Failed to navigate to likes:', error);
+      throw error;
     }
 
-    // Now navigate to likes
-    console.log('Navigating to likes page...');
-    await page.goto('https://twitter.com/home', {
-      waitUntil: 'networkidle',
-      timeout: 30000
-    });
-
-    // Click the Likes link in the sidebar
-    const likesLink = await page.getByRole('link', { name: 'Likes' });
-    if (likesLink) {
-      await likesLink.click();
-      await page.waitForLoadState('networkidle');
-    }
-
+    // Wait for navigation bar to be visible
+    await page.waitForSelector('nav[role="navigation"]', { timeout: 10000 });
+    
     console.log('Waiting for content to load...');
     // Wait for tweets to be visible
     await page.waitForSelector('article', { timeout: 30000 }).catch(() => {
