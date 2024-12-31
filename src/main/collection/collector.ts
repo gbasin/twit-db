@@ -261,11 +261,15 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
         const tweetTextEl = el.querySelector('[data-testid="tweetText"]');
         const textContent = tweetTextEl ? tweetTextEl.textContent || '' : '';
         
-        // Get author info
+        // Get author info - look for the User-Name element
         const authorEl = el.querySelector('[data-testid="User-Name"]');
-        const displayName = authorEl?.querySelector('span')?.textContent || '';
-        const handle = authorEl?.querySelector('span:last-child')?.textContent?.trim() || '';
-        const author = handle ? `${displayName}${handle}` : displayName;
+        let author = 'Unknown';
+        if (authorEl) {
+          const spans = authorEl.querySelectorAll('span');
+          const displayName = spans[0]?.textContent || '';
+          const handle = spans[spans.length - 1]?.textContent || '';
+          author = `${displayName} ${handle}`.trim();
+        }
         
         // Check for media
         const images = Array.from(el.querySelectorAll('img[src*="pbs.twimg.com/media"]')).map(img => ({
@@ -288,13 +292,19 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
         } : null;
         
         // Get quoted tweet if present
-        const quotedTweet = el.querySelector('[data-testid="tweet-text-show-more-link"]');
+        const quotedTweet = el.querySelector('[data-testid="tweet"] article');
         const quotedText = quotedTweet ? quotedTweet.textContent || '' : '';
+        
+        // Clean up text content
+        const cleanText = textContent.replace(/\s+/g, ' ').trim();
+        const finalText = quotedText 
+          ? `${cleanText}\n\nQuoted Tweet:\n${quotedText.replace(/\s+/g, ' ').trim()}`
+          : cleanText;
         
         return {
           id: tweetId,
           html: el.innerHTML || '',
-          text_content: quotedText ? `${textContent}\nQuote: ${quotedText}` : textContent,
+          text_content: finalText,
           author: author,
           liked_at: new Date().toISOString(),
           first_seen_at: new Date().toISOString(),

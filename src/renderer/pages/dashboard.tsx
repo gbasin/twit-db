@@ -35,56 +35,31 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const shouldTruncate = tweet.text_content.length > 280;
 
-  // Parse quoted tweet if present
-  const quotedMatch = tweet.text_content.match(/Quote(.+?)·/);
-  const hasQuote = quotedMatch !== null;
-  let mainText = tweet.text_content;
-  let quoteText = '';
-
-  if (hasQuote) {
-    const quoteStart = tweet.text_content.indexOf('Quote');
-    mainText = tweet.text_content.slice(0, quoteStart).trim();
-    quoteText = tweet.text_content.slice(quoteStart + 5).trim();
-  }
-
-  // Extract handle from author field (e.g. "kache@yacineMTB" -> ["kache", "yacineMTB"])
-  const [displayName, handle] = tweet.author.includes('@') 
-    ? tweet.author.split('@')
-    : [tweet.author, ''];
-
-  // Format engagement numbers
-  const getEngagementNumbers = (text: string) => {
-    const numbers = text.match(/(\d+)/g);
-    if (!numbers) return [];
-    return numbers.map(n => parseInt(n)).filter(n => !isNaN(n));
-  };
-  const numbers = getEngagementNumbers(mainText);
-  const hasEngagement = numbers.length > 0;
+  // Parse author info
+  const [displayName, handle] = tweet.author.split(/(@\w+)/).filter(Boolean);
 
   return (
     <div className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors">
       {/* Author Info */}
-      <div className="flex items-start justify-between mb-1">
-        <div className="flex items-center">
-          <div>
-            <div className="font-bold text-gray-900 hover:underline cursor-pointer">
-              {displayName}
-            </div>
-            {handle && (
-              <div className="text-sm text-gray-500">@{handle}</div>
-            )}
-          </div>
-          <div className="text-sm text-gray-500 ml-2">·</div>
-          <div className="text-sm text-gray-500 ml-2 hover:underline cursor-pointer">
-            {formatTimestamp(new Date(tweet.liked_at))}
-          </div>
+      <div className="flex items-center gap-2 mb-2">
+        <div>
+          <span className="font-bold text-gray-900">{displayName}</span>
+          {handle && <span className="text-gray-500 ml-1">{handle}</span>}
+        </div>
+        <span className="text-gray-500">·</span>
+        <div className="text-gray-500">
+          {formatTimestamp(new Date(tweet.liked_at))}
         </div>
       </div>
 
-      {/* Main Tweet Content */}
-      <div className="mb-2">
+      {/* Tweet Content */}
+      <div className="mb-3">
         <div className={`text-gray-900 ${!isExpanded && shouldTruncate ? 'line-clamp-4' : ''}`}>
-          {mainText}
+          {tweet.text_content.split('\n\n').map((block, i) => (
+            <p key={i} className="mb-2 last:mb-0">
+              {block}
+            </p>
+          ))}
         </div>
         {shouldTruncate && (
           <button
@@ -96,40 +71,46 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
         )}
       </div>
 
-      {/* Quoted Tweet */}
-      {hasQuote && (
-        <div className="border border-gray-200 rounded-lg p-3 mb-2 hover:bg-gray-100">
-          <div className="text-sm text-gray-900">{quoteText}</div>
+      {/* Media Preview */}
+      {tweet.has_media && (
+        <div className="relative w-full h-48 mb-3 rounded-lg overflow-hidden bg-gray-100">
+          <div className="absolute inset-0 flex items-center justify-center text-gray-400">
+            <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} 
+                d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+          </div>
         </div>
       )}
 
-      {/* Engagement Numbers */}
-      {hasEngagement && (
-        <div className="flex items-center space-x-6 text-sm text-gray-500 mb-2">
-          {numbers.map((n, i) => (
-            <div key={i} className="flex items-center space-x-1">
-              <span>{formatNumber(n)}</span>
+      {/* Footer */}
+      <div className="flex items-center justify-between text-sm text-gray-500">
+        <div className="flex items-center gap-4">
+          {tweet.has_media && (
+            <div className="flex items-center gap-1">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} 
+                  d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+              Media
             </div>
-          ))}
+          )}
+          {tweet.has_links && (
+            <div className="flex items-center gap-1">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} 
+                  d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+              </svg>
+              Links
+            </div>
+          )}
         </div>
-      )}
-
-      {/* Media & Links Indicators */}
-      <div className="flex items-center space-x-4 text-sm text-gray-500">
-        {tweet.has_media && (
-          <div className="flex items-center">
-            <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-            </svg>
-          </div>
-        )}
-        {tweet.has_links && (
-          <div className="flex items-center">
-            <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-            </svg>
-          </div>
-        )}
+        <button 
+          onClick={() => window.open(`https://twitter.com/i/status/${tweet.id}`, '_blank')}
+          className="text-blue-500 hover:text-blue-600"
+        >
+          View on Twitter
+        </button>
       </div>
     </div>
   );
