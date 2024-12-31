@@ -78,133 +78,13 @@ export async function insertMedia(data: {
   );
 }
 
-export async function initDatabase() {
-  if (_db) {
-    return _db;
-  }
-
-  // Ensure directories exist before initializing DB
-  await ensureDataDirectories();
-  
-  const dbPath = path.join(DIRS.db, 'tweets.db');
-  console.log('Initializing database at:', dbPath);
-
-  try {
-    const db = await open({
-      filename: dbPath,
-      driver: sqlite3.Database,
-      mode: sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE
-    });
-
-    // Enable foreign keys and WAL mode for better reliability
-    await db.exec(`
-      PRAGMA foreign_keys = ON;
-      PRAGMA journal_mode = WAL;
-      PRAGMA synchronous = NORMAL;
-    `);
-
-    // Create the tables if they don't exist already
-    await db.exec(`BEGIN TRANSACTION;
-      -- Media type enum
-      CREATE TABLE IF NOT EXISTS media_types (
-        id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE
-      );
-
-      -- Insert media types if they don't exist
-      INSERT OR IGNORE INTO media_types (id, name) VALUES
-        (1, 'image'),
-        (2, 'video'),
-        (3, 'gif'),
-        (4, 'card');
-
-      CREATE TABLE IF NOT EXISTS tweets (
-        id TEXT PRIMARY KEY,
-        html TEXT NOT NULL,
-        text_content TEXT NOT NULL,
-        author TEXT NOT NULL,
-        liked_at TIMESTAMP NOT NULL,
-        first_seen_at TIMESTAMP NOT NULL,
-        is_quote_tweet INTEGER DEFAULT 0,
-        has_media INTEGER DEFAULT 0,
-        has_links INTEGER DEFAULT 0,
-        is_deleted INTEGER DEFAULT 0,
-        card_type TEXT,
-        card_data TEXT  -- JSON data for rich media cards
-      );
-
-      CREATE TABLE IF NOT EXISTS media (
-        id TEXT PRIMARY KEY,
-        tweet_id TEXT NOT NULL,
-        media_type_id INTEGER NOT NULL,
-        local_path TEXT NOT NULL,
-        original_url TEXT NOT NULL,
-        downloaded_at TIMESTAMP NOT NULL,
-        metadata TEXT,  -- JSON field for format-specific metadata
-        FOREIGN KEY(tweet_id) REFERENCES tweets(id),
-        FOREIGN KEY(media_type_id) REFERENCES media_types(id)
-      );
-
-      CREATE TABLE IF NOT EXISTS linked_content (
-        id TEXT PRIMARY KEY,
-        tweet_id TEXT NOT NULL,
-        snapshot_path TEXT NOT NULL,
-        original_url TEXT NOT NULL,
-        captured_at TIMESTAMP NOT NULL,
-        FOREIGN KEY(tweet_id) REFERENCES tweets(id)
-      );
-
-      CREATE TABLE IF NOT EXISTS quote_tweets (
-        parent_tweet_id TEXT NOT NULL,
-        quoted_tweet_id TEXT NOT NULL,
-        PRIMARY KEY(parent_tweet_id, quoted_tweet_id),
-        FOREIGN KEY(parent_tweet_id) REFERENCES tweets(id),
-        FOREIGN KEY(quoted_tweet_id) REFERENCES tweets(id)
-      );
-
-      CREATE TABLE IF NOT EXISTS embeddings (
-        id TEXT PRIMARY KEY,
-        tweet_id TEXT NOT NULL,
-        embedding BLOB NOT NULL,
-        updated_at TIMESTAMP NOT NULL,
-        FOREIGN KEY(tweet_id) REFERENCES tweets(id)
-      );
-
-      DROP TABLE IF EXISTS tweets_fts;
-      CREATE VIRTUAL TABLE tweets_fts USING fts5(
-        text_content,
-        author,
-        content='tweets',
-        content_rowid='id'
-      );
-    COMMIT;`);
-
-    _db = db;
-    return db;
-  } catch (error: any) {
-    console.error('Failed to initialize database:', error);
-    // If database is corrupted, try to recover by deleting and recreating
-    if (error.code === 'SQLITE_CORRUPT') {
-      console.log('Database appears corrupted, attempting recovery...');
-      try {
-        await fs.unlink(dbPath);
-        console.log('Deleted corrupted database, retrying initialization...');
-        return initDatabase();
-      } catch (unlinkError) {
-        console.error('Failed to delete corrupted database:', unlinkError);
-        throw error;
-      }
-    }
-    throw error;
-  }
-}
-
 export async function insertTweet(tweet: any) {
   const db = await initDatabase();
 
   try {
-    await db.exec('BEGIN TRANSACTION');
-
+    console.log(`Inserting tweet ${tweet.id} by ${tweet.author}`);
+    
+    // Insert the tweet
     await db.run(
       `INSERT OR REPLACE INTO tweets (id, html, text_content, author, liked_at, first_seen_at, is_quote_tweet, has_media, has_links, is_deleted, card_type, card_data)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -223,17 +103,10 @@ export async function insertTweet(tweet: any) {
         tweet.card_data
       ]
     );
-
-    // For FTS table, we need to delete first then insert because UPSERT isn't supported
-    await db.run('DELETE FROM tweets_fts WHERE rowid = ?', [tweet.id]);
-    await db.run(
-      'INSERT INTO tweets_fts (rowid, text_content, author) VALUES (?, ?, ?)',
-      [tweet.id, tweet.text_content, tweet.author]
-    );
-
-    await db.exec('COMMIT');
+    console.log('Tweet inserted successfully');
+    return true;
   } catch (error) {
-    await db.exec('ROLLBACK');
+    console.error(`Failed to insert tweet ${tweet.id}:`, error);
     throw error;
   }
 }
@@ -243,12 +116,6 @@ export async function searchTweets(query: string, filters: SearchFilters = {}) {
 
   const conditions: string[] = [];
   const params: any[] = [];
-
-  // Full-text search condition
-  if (query) {
-    conditions.push('tweets_fts MATCH ?');
-    params.push(query);
-  }
 
   // Date range filter
   if (filters.dateRange) {
@@ -275,31 +142,116 @@ export async function searchTweets(query: string, filters: SearchFilters = {}) {
     params.push(filters.author);
   }
 
+  // Text search (simple LIKE for now)
+  if (query) {
+    conditions.push('(text_content LIKE ? OR author LIKE ?)');
+    const likePattern = `%${query}%`;
+    params.push(likePattern, likePattern);
+  }
+
   const whereClause = conditions.length > 0 
     ? `WHERE ${conditions.join(' AND ')}`
     : '';
 
-  // If there's no search query, just get tweets directly
-  if (!query) {
-    const results = await db.all(`
-      SELECT *
-      FROM tweets
-      ${whereClause}
-      ORDER BY liked_at DESC
-      LIMIT 50
-    `, params);
-    return results;
-  }
-
-  // If there is a search query, join with FTS table
   const results = await db.all(`
-    SELECT tweets.*
+    SELECT *
     FROM tweets
-    JOIN tweets_fts ON tweets.id = tweets_fts.rowid
     ${whereClause}
     ORDER BY liked_at DESC
     LIMIT 50
   `, params);
 
   return results;
+}
+
+export async function initDatabase() {
+  if (_db) {
+    return _db;
+  }
+
+  // Ensure directories exist before initializing DB
+  await ensureDataDirectories();
+  
+  const dbPath = path.join(DIRS.db, 'tweets.db');
+  console.log('Initializing database at:', dbPath);
+
+  try {
+    const db = await open({
+      filename: dbPath,
+      driver: sqlite3.Database,
+      mode: sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE
+    });
+
+    // Enable foreign keys
+    await db.exec('PRAGMA foreign_keys = ON;');
+    console.log('Foreign keys enabled');
+
+    // Create tables one by one
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS media_types (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE
+      );
+    `);
+    console.log('Media types table created');
+
+    await db.exec(`
+      INSERT OR IGNORE INTO media_types (id, name) VALUES
+        (1, 'image'),
+        (2, 'video'),
+        (3, 'gif'),
+        (4, 'card');
+    `);
+    console.log('Media types inserted');
+
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS tweets (
+        id TEXT PRIMARY KEY,
+        html TEXT NOT NULL,
+        text_content TEXT NOT NULL,
+        author TEXT NOT NULL,
+        liked_at TIMESTAMP NOT NULL,
+        first_seen_at TIMESTAMP NOT NULL,
+        is_quote_tweet INTEGER DEFAULT 0,
+        has_media INTEGER DEFAULT 0,
+        has_links INTEGER DEFAULT 0,
+        is_deleted INTEGER DEFAULT 0,
+        card_type TEXT,
+        card_data TEXT
+      );
+    `);
+    console.log('Tweets table created');
+
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS media (
+        id TEXT PRIMARY KEY,
+        tweet_id TEXT NOT NULL,
+        media_type_id INTEGER NOT NULL,
+        local_path TEXT NOT NULL,
+        original_url TEXT NOT NULL,
+        downloaded_at TIMESTAMP NOT NULL,
+        metadata TEXT,
+        FOREIGN KEY(tweet_id) REFERENCES tweets(id),
+        FOREIGN KEY(media_type_id) REFERENCES media_types(id)
+      );
+    `);
+    console.log('Media table created');
+
+    _db = db;
+    return db;
+  } catch (error: any) {
+    console.error('Failed to initialize database:', error);
+    if (error.code === 'SQLITE_CORRUPT') {
+      console.log('Database appears corrupted, attempting recovery...');
+      try {
+        await fs.unlink(dbPath);
+        console.log('Deleted corrupted database');
+        _db = null;
+        return initDatabase();
+      } catch (unlinkError) {
+        console.error('Failed to delete corrupted database:', unlinkError);
+      }
+    }
+    throw error;
+  }
 }
