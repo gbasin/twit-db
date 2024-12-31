@@ -16,28 +16,62 @@
 import { app } from 'electron';
 import { createTray } from './tray';
 import { initDatabase } from './storage/db';
+import { createWindow, getMainWindow } from './window';
 
+// Prevent multiple instances
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+}
+
+// Wait for app to be ready
 app.whenReady().then(async () => {
   try {
+    console.log('App is ready, initializing...');
+    
     // Initialize database
     await initDatabase();
+    console.log('Database initialized');
     
-    // Create tray
-    createTray();
+    // Create tray first
+    const trayInstance = createTray();
+    console.log('Tray created');
     
-    app.dock?.hide(); // Hide from dock on macOS since this is a menu bar app
+    // Hide from dock on macOS since this is a menu bar app
+    if (process.platform === 'darwin') {
+      app.dock?.hide();
+      console.log('Dock hidden on macOS');
+    }
+    
+    // Create window last
+    createWindow();
+    console.log('Window created');
+    
+    console.log('App initialization complete');
   } catch (error) {
     console.error('Failed to initialize app:', error);
     app.quit();
   }
 });
 
+// Quit when all windows are closed.
 app.on('window-all-closed', () => {
-  // Keep the app running even when all windows are closed
-  // We're a menu bar app, so we only quit when the user explicitly chooses to
+  // On macOS it is common for applications and their menu bar
+  // to stay active until the user quits explicitly with Cmd + Q
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
 });
 
-// Quit when all windows are closed, except on macOS
+app.on('activate', () => {
+  // On macOS it's common to re-create a window in the app when the
+  // dock icon is clicked and there are no other windows open.
+  if (getMainWindow() === null) {
+    createWindow();
+  }
+});
+
+// Clean up when quitting
 app.on('before-quit', () => {
-  // Clean up any background processes or connections here
+  console.log('App is quitting...');
 });
