@@ -3,6 +3,7 @@ import { open } from 'sqlite';
 import path from 'path';
 import fs from 'fs/promises';
 import crypto from 'crypto';
+import { app } from 'electron';
 
 interface SearchFilters {
   dateRange?: { start: Date; end: Date };
@@ -14,7 +15,7 @@ interface SearchFilters {
 let _db: any = null;
 
 // Define the data directory structure
-const DATA_DIR = './data';
+const DATA_DIR = path.join(app.getPath('userData'), 'data');
 export const DIRS = {
   db: path.join(DATA_DIR, 'db'),
   media: path.join(DATA_DIR, 'media'),  // Single directory for all media
@@ -23,11 +24,13 @@ export const DIRS = {
 
 // Ensure all required directories exist
 async function ensureDataDirectories() {
+  console.log('Creating data directories in:', DATA_DIR);
   for (const dir of [
     DIRS.db,
     DIRS.media,
     DIRS.snapshots,
   ]) {
+    console.log('Ensuring directory exists:', dir);
     await fs.mkdir(dir, { recursive: true });
   }
 }
@@ -82,119 +85,157 @@ export async function initDatabase() {
 
   // Ensure directories exist before initializing DB
   await ensureDataDirectories();
+  
+  const dbPath = path.join(DIRS.db, 'tweets.db');
+  console.log('Initializing database at:', dbPath);
 
-  const db = await open({
-    filename: path.join(DIRS.db, 'tweets.db'),
-    driver: sqlite3.Database,
-  });
+  try {
+    const db = await open({
+      filename: dbPath,
+      driver: sqlite3.Database,
+      mode: sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE
+    });
 
-  // Create the tables if they don't exist already
-  await db.exec(`
-    -- Media type enum
-    CREATE TABLE IF NOT EXISTS media_types (
-      id INTEGER PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE
-    );
+    // Enable foreign keys and WAL mode for better reliability
+    await db.exec(`
+      PRAGMA foreign_keys = ON;
+      PRAGMA journal_mode = WAL;
+      PRAGMA synchronous = NORMAL;
+    `);
 
-    -- Insert media types if they don't exist
-    INSERT OR IGNORE INTO media_types (id, name) VALUES
-      (1, 'image'),
-      (2, 'video'),
-      (3, 'gif'),
-      (4, 'card');
+    // Create the tables if they don't exist already
+    await db.exec(`BEGIN TRANSACTION;
+      -- Media type enum
+      CREATE TABLE IF NOT EXISTS media_types (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE
+      );
 
-    CREATE TABLE IF NOT EXISTS tweets (
-      id TEXT PRIMARY KEY,
-      html TEXT NOT NULL,
-      text_content TEXT NOT NULL,
-      author TEXT NOT NULL,
-      liked_at TIMESTAMP NOT NULL,
-      first_seen_at TIMESTAMP NOT NULL,
-      is_quote_tweet INTEGER DEFAULT 0,
-      has_media INTEGER DEFAULT 0,
-      has_links INTEGER DEFAULT 0,
-      is_deleted INTEGER DEFAULT 0,
-      card_type TEXT,
-      card_data TEXT  -- JSON data for rich media cards
-    );
+      -- Insert media types if they don't exist
+      INSERT OR IGNORE INTO media_types (id, name) VALUES
+        (1, 'image'),
+        (2, 'video'),
+        (3, 'gif'),
+        (4, 'card');
 
-    CREATE TABLE IF NOT EXISTS media (
-      id TEXT PRIMARY KEY,
-      tweet_id TEXT NOT NULL,
-      media_type_id INTEGER NOT NULL,
-      local_path TEXT NOT NULL,
-      original_url TEXT NOT NULL,
-      downloaded_at TIMESTAMP NOT NULL,
-      metadata TEXT,  -- JSON field for format-specific metadata
-      FOREIGN KEY(tweet_id) REFERENCES tweets(id),
-      FOREIGN KEY(media_type_id) REFERENCES media_types(id)
-    );
+      CREATE TABLE IF NOT EXISTS tweets (
+        id TEXT PRIMARY KEY,
+        html TEXT NOT NULL,
+        text_content TEXT NOT NULL,
+        author TEXT NOT NULL,
+        liked_at TIMESTAMP NOT NULL,
+        first_seen_at TIMESTAMP NOT NULL,
+        is_quote_tweet INTEGER DEFAULT 0,
+        has_media INTEGER DEFAULT 0,
+        has_links INTEGER DEFAULT 0,
+        is_deleted INTEGER DEFAULT 0,
+        card_type TEXT,
+        card_data TEXT  -- JSON data for rich media cards
+      );
 
-    CREATE TABLE IF NOT EXISTS linked_content (
-      id TEXT PRIMARY KEY,
-      tweet_id TEXT NOT NULL,
-      snapshot_path TEXT NOT NULL,
-      original_url TEXT NOT NULL,
-      captured_at TIMESTAMP NOT NULL,
-      FOREIGN KEY(tweet_id) REFERENCES tweets(id)
-    );
+      CREATE TABLE IF NOT EXISTS media (
+        id TEXT PRIMARY KEY,
+        tweet_id TEXT NOT NULL,
+        media_type_id INTEGER NOT NULL,
+        local_path TEXT NOT NULL,
+        original_url TEXT NOT NULL,
+        downloaded_at TIMESTAMP NOT NULL,
+        metadata TEXT,  -- JSON field for format-specific metadata
+        FOREIGN KEY(tweet_id) REFERENCES tweets(id),
+        FOREIGN KEY(media_type_id) REFERENCES media_types(id)
+      );
 
-    CREATE TABLE IF NOT EXISTS quote_tweets (
-      parent_tweet_id TEXT NOT NULL,
-      quoted_tweet_id TEXT NOT NULL,
-      PRIMARY KEY(parent_tweet_id, quoted_tweet_id),
-      FOREIGN KEY(parent_tweet_id) REFERENCES tweets(id),
-      FOREIGN KEY(quoted_tweet_id) REFERENCES tweets(id)
-    );
+      CREATE TABLE IF NOT EXISTS linked_content (
+        id TEXT PRIMARY KEY,
+        tweet_id TEXT NOT NULL,
+        snapshot_path TEXT NOT NULL,
+        original_url TEXT NOT NULL,
+        captured_at TIMESTAMP NOT NULL,
+        FOREIGN KEY(tweet_id) REFERENCES tweets(id)
+      );
 
-    CREATE TABLE IF NOT EXISTS embeddings (
-      id TEXT PRIMARY KEY,
-      tweet_id TEXT NOT NULL,
-      embedding BLOB NOT NULL,
-      updated_at TIMESTAMP NOT NULL,
-      FOREIGN KEY(tweet_id) REFERENCES tweets(id)
-    );
+      CREATE TABLE IF NOT EXISTS quote_tweets (
+        parent_tweet_id TEXT NOT NULL,
+        quoted_tweet_id TEXT NOT NULL,
+        PRIMARY KEY(parent_tweet_id, quoted_tweet_id),
+        FOREIGN KEY(parent_tweet_id) REFERENCES tweets(id),
+        FOREIGN KEY(quoted_tweet_id) REFERENCES tweets(id)
+      );
 
-    CREATE VIRTUAL TABLE IF NOT EXISTS tweets_fts USING fts5(
-      text_content,
-      author,
-      content='tweets',
-      content_rowid='id'
-    );
-  `);
+      CREATE TABLE IF NOT EXISTS embeddings (
+        id TEXT PRIMARY KEY,
+        tweet_id TEXT NOT NULL,
+        embedding BLOB NOT NULL,
+        updated_at TIMESTAMP NOT NULL,
+        FOREIGN KEY(tweet_id) REFERENCES tweets(id)
+      );
 
-  _db = db;
-  return db;
+      DROP TABLE IF EXISTS tweets_fts;
+      CREATE VIRTUAL TABLE tweets_fts USING fts5(
+        text_content,
+        author,
+        content='tweets',
+        content_rowid='id'
+      );
+    COMMIT;`);
+
+    _db = db;
+    return db;
+  } catch (error: any) {
+    console.error('Failed to initialize database:', error);
+    // If database is corrupted, try to recover by deleting and recreating
+    if (error.code === 'SQLITE_CORRUPT') {
+      console.log('Database appears corrupted, attempting recovery...');
+      try {
+        await fs.unlink(dbPath);
+        console.log('Deleted corrupted database, retrying initialization...');
+        return initDatabase();
+      } catch (unlinkError) {
+        console.error('Failed to delete corrupted database:', unlinkError);
+        throw error;
+      }
+    }
+    throw error;
+  }
 }
 
 export async function insertTweet(tweet: any) {
   const db = await initDatabase();
 
-  await db.run(
-    `INSERT OR REPLACE INTO tweets (id, html, text_content, author, liked_at, first_seen_at, is_quote_tweet, has_media, has_links, is_deleted, card_type, card_data)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      tweet.id,
-      tweet.html,
-      tweet.text_content,
-      tweet.author,
-      tweet.liked_at,
-      tweet.first_seen_at,
-      tweet.is_quote_tweet ? 1 : 0,
-      tweet.has_media ? 1 : 0,
-      tweet.has_links ? 1 : 0,
-      tweet.is_deleted ? 1 : 0,
-      tweet.card_type,
-      tweet.card_data
-    ]
-  );
+  try {
+    await db.exec('BEGIN TRANSACTION');
 
-  // For FTS table, we need to delete first then insert because UPSERT isn't supported
-  await db.run('DELETE FROM tweets_fts WHERE rowid = ?', [tweet.id]);
-  await db.run(
-    'INSERT INTO tweets_fts (rowid, text_content, author) VALUES (?, ?, ?)',
-    [tweet.id, tweet.text_content, tweet.author]
-  );
+    await db.run(
+      `INSERT OR REPLACE INTO tweets (id, html, text_content, author, liked_at, first_seen_at, is_quote_tweet, has_media, has_links, is_deleted, card_type, card_data)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        tweet.id,
+        tweet.html,
+        tweet.text_content,
+        tweet.author,
+        tweet.liked_at,
+        tweet.first_seen_at,
+        tweet.is_quote_tweet ? 1 : 0,
+        tweet.has_media ? 1 : 0,
+        tweet.has_links ? 1 : 0,
+        tweet.is_deleted ? 1 : 0,
+        tweet.card_type,
+        tweet.card_data
+      ]
+    );
+
+    // For FTS table, we need to delete first then insert because UPSERT isn't supported
+    await db.run('DELETE FROM tweets_fts WHERE rowid = ?', [tweet.id]);
+    await db.run(
+      'INSERT INTO tweets_fts (rowid, text_content, author) VALUES (?, ?, ?)',
+      [tweet.id, tweet.text_content, tweet.author]
+    );
+
+    await db.exec('COMMIT');
+  } catch (error) {
+    await db.exec('ROLLBACK');
+    throw error;
+  }
 }
 
 export async function searchTweets(query: string, filters: SearchFilters = {}) {
@@ -238,10 +279,23 @@ export async function searchTweets(query: string, filters: SearchFilters = {}) {
     ? `WHERE ${conditions.join(' AND ')}`
     : '';
 
+  // If there's no search query, just get tweets directly
+  if (!query) {
+    const results = await db.all(`
+      SELECT *
+      FROM tweets
+      ${whereClause}
+      ORDER BY liked_at DESC
+      LIMIT 50
+    `, params);
+    return results;
+  }
+
+  // If there is a search query, join with FTS table
   const results = await db.all(`
     SELECT tweets.*
     FROM tweets
-    JOIN tweets_fts ON tweets.id = tweets_fts.id
+    JOIN tweets_fts ON tweets.id = tweets_fts.rowid
     ${whereClause}
     ORDER BY liked_at DESC
     LIMIT 50

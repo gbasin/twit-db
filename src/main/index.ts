@@ -1,7 +1,38 @@
-import { app } from 'electron';
+import { app, ipcMain } from 'electron';
 import { createTray } from './tray';
-import { initDatabase } from './storage/db';
+import { initDatabase, searchTweets } from './storage/db';
 import { createWindow } from './window';
+
+// Register IPC handlers
+function setupIPC() {
+  ipcMain.handle('get-tweets', async (event, { query, filters }) => {
+    try {
+      return await searchTweets(query, filters);
+    } catch (error) {
+      console.error('Error getting tweets:', error);
+      throw error;
+    }
+  });
+
+  ipcMain.handle('start-collection', async (event, mode) => {
+    // TODO: Implement collection status tracking
+    return true;
+  });
+
+  ipcMain.handle('stop-collection', async () => {
+    // TODO: Implement collection status tracking
+    return true;
+  });
+
+  ipcMain.handle('get-stats', async () => {
+    // TODO: Implement stats
+    return {
+      totalTweets: 0,
+      lastCollection: null,
+      isCollecting: false
+    };
+  });
+}
 
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
@@ -15,6 +46,10 @@ app.whenReady().then(async () => {
     // Initialize database first
     await initDatabase();
     console.log('Database initialized');
+    
+    // Setup IPC handlers
+    setupIPC();
+    console.log('IPC handlers registered');
     
     // Create tray
     const trayInstance = createTray();

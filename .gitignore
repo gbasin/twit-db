@@ -138,3 +138,6 @@ dist
 
 # Data
 /data/
+/data/db/
+/data/media/
+/data/snapshots/
