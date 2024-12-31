@@ -2,7 +2,7 @@
   "name": "twit-db",
   "version": "1.0.0",
   "description": "Twitter Likes Archiver Desktop App",
-  "main": "index.js",
+  "main": "dist/main/index.js",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/gbasin/twit-db.git"
@@ -14,9 +14,9 @@
   },
   "homepage": "https://github.com/gbasin/twit-db#readme",
   "scripts": {
-    "dev": "concurrently \"vite --port 3000\" \"electron .\"",
+    "dev": "tsc && concurrently \"tsc -w\" \"vite --port 3000\" \"electron .\"",
     "start": "electron .",
-    "build": "vite build",
+    "build": "tsc && vite build",
     "test": "jest"
   },
   "keywords": [],
@@ -41,6 +41,7 @@
     "@playwright/test": "^1.49.1",
     "@types/jest": "^29.5.6",
     "@types/node": "^20.6.4",
-    "@types/sqlite3": "^3.1.8"
+    "@types/sqlite3": "^3.1.8",
+    "@vitejs/plugin-react": "^4.3.4"
   }
 }
