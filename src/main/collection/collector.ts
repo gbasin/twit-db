@@ -256,8 +256,16 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
       return articles.map((el: Element) => {
         // Extract basic tweet info
         const tweetId = el.querySelector('a[href*="/status/"]')?.getAttribute('href')?.split('/status/')[1] || '';
-        const textContent = el.textContent || '';
-        const author = el.querySelector('[href*="/"] span')?.textContent || 'unknown';
+        
+        // Get the main tweet text content
+        const tweetTextEl = el.querySelector('[data-testid="tweetText"]');
+        const textContent = tweetTextEl ? tweetTextEl.textContent || '' : '';
+        
+        // Get author info
+        const authorEl = el.querySelector('[data-testid="User-Name"]');
+        const displayName = authorEl?.querySelector('span')?.textContent || '';
+        const handle = authorEl?.querySelector('span:last-child')?.textContent?.trim() || '';
+        const author = handle ? `${displayName}${handle}` : displayName;
         
         // Check for media
         const images = Array.from(el.querySelectorAll('img[src*="pbs.twimg.com/media"]')).map(img => ({
@@ -279,14 +287,18 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
           description: card.querySelector('[data-testid="card.layoutLarge.description"]')?.textContent
         } : null;
         
+        // Get quoted tweet if present
+        const quotedTweet = el.querySelector('[data-testid="tweet-text-show-more-link"]');
+        const quotedText = quotedTweet ? quotedTweet.textContent || '' : '';
+        
         return {
           id: tweetId,
           html: el.innerHTML || '',
-          text_content: textContent,
+          text_content: quotedText ? `${textContent}\nQuote: ${quotedText}` : textContent,
           author: author,
           liked_at: new Date().toISOString(),
           first_seen_at: new Date().toISOString(),
-          is_quote_tweet: !!el.querySelector('[data-testid="tweet-text-show-more-link"]'),
+          is_quote_tweet: !!quotedTweet,
           has_media: !!(images.length || videos.length || gifs.length),
           has_links: !!el.querySelector('a[href*="//"]'),
           is_deleted: false,
