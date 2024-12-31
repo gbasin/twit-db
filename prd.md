@@ -4,27 +4,36 @@
 Version 1.0 - December 2024
 
 ## Overview
-Twitter Likes Archive is a desktop application that enables users to archive and search their Twitter likes, including associated media and linked content. The application runs in the background, periodically collecting new likes while providing a searchable interface to explore the archive.
+Twitter Likes Archive is a desktop app for macOS (with future plans for cross-platform) that archives and indexes liked tweets, including media and linked content. The app runs periodically, retrieving new likes via browser automation while providing a searchable dashboard for exploring saved content.
 
 ## Target Users
-- Primary user: Twitter account owner wanting to preserve and search their liked content
+- Primary users: Individuals who heavily rely on Twitter likes to bookmark resources and want to ensure the content is preserved locally.
 - Use case: Personal archival and content retrieval
 - Platform: macOS initially
+
+## Primary Goals
+1.	Automatically and incrementally archive new likes
+2.	Store complete tweet data (HTML, text, metadata)
+3.	Download and store associated media
+4.	Provide semantic and full-text search
 
 ## Technology Stack
 - **Framework**: Electron
 - **Language**: TypeScript
 - **Frontend**: React with TailwindCSS
-- **Browser Automation**: Playwright
-- **Database**: SQLite3
+- **Browser Automation**: Playwright (using a local Chrome profile)
+- **Database**: SQLite3 (FTS5 for keyword search + vector store for semantic embeddings)
 - **Build Tools**: Vite
 - **Testing**: Jest, Playwright Test
 
 ## Core Features
 
 ### 1. Data Collection
+#### Authentication
+- Reuse an existing Chrome user profile for Twitter login to avoid manual login flows.
+- Manage potential session timeouts and handle re-authentication triggers.
+
 #### Browser Automation
-- Utilize existing Chrome profile for authentication
 - Run browser instance in background (hidden from view)
 - Implement human-like behavior patterns:
   - Random timing between actions
@@ -65,6 +74,11 @@ Twitter Likes Archive is a desktop application that enables users to archive and
   - Relationship tracking
 
 ### 2. Storage System
+#### Database
+- SQLite schema with tables for tweets, media, linked content, quote relationships, and embeddings.
+- Use FTS5 for fast keyword search.
+- Create or update vector embeddings in embeddings table for semantic search.
+	
 #### Database Schema
 ```sql
 CREATE TABLE tweets (
