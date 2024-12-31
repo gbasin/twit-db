@@ -29,13 +29,17 @@ app.whenReady().then(async () => {
   try {
     console.log('App is ready, initializing...');
     
+    // Create tray first, before anything else
+    console.log('Creating tray...');
+    const trayInstance = createTray();
+    if (!trayInstance) {
+      throw new Error('Failed to create tray');
+    }
+    console.log('Tray created successfully');
+    
     // Initialize database
     await initDatabase();
     console.log('Database initialized');
-    
-    // Create tray first
-    const trayInstance = createTray();
-    console.log('Tray created');
     
     // Hide from dock on macOS since this is a menu bar app
     if (process.platform === 'darwin') {
@@ -44,7 +48,8 @@ app.whenReady().then(async () => {
     }
     
     // Create window last
-    createWindow();
+    console.log('Creating window...');
+    await createWindow();
     console.log('Window created');
     
     console.log('App initialization complete');

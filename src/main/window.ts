@@ -5,7 +5,7 @@ import path from 'path';
 let mainWindow: BrowserWindow | null = null;
 
 // Create the browser window
-export function createWindow() {
+export async function createWindow() {
   if (mainWindow !== null) {
     mainWindow.show();
     mainWindow.focus();
@@ -24,10 +24,12 @@ export function createWindow() {
 
   // Load the app
   if (process.env.NODE_ENV === 'development') {
-    mainWindow.loadURL('http://localhost:3000');
+    console.log('Loading app from dev server...');
+    await mainWindow.loadURL('http://localhost:3000');
     mainWindow.webContents.openDevTools();
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+    console.log('Loading app from built files...');
+    await mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
   }
 
   mainWindow.on('closed', () => {
