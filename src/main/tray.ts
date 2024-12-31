@@ -2,57 +2,73 @@ import { Tray, Menu, app, nativeImage } from 'electron';
 import path from 'path';
 import { collectLikes } from './collection/collector';
 import { showWindow } from './window';
+import { existsSync } from 'fs';
 
 let tray: Tray | null = null;
 
 export function createTray() {
-  if (tray !== null) {
-    return tray;
-  }
-
-  try {
-    // Use app.isPackaged to determine if we're in production
-    const iconPath = app.isPackaged
-      ? path.join(process.resourcesPath, 'assets', 'icon.png')
-      : path.join(__dirname, '../../assets', 'icon.png');
-
-    console.log('Loading tray icon from:', iconPath);
-    
-    const icon = nativeImage.createFromPath(iconPath);
-    if (icon.isEmpty()) {
-      throw new Error(`Failed to load icon from path: ${iconPath}`);
+    if (tray !== null) {
+        return tray;
     }
 
-    const trayIcon = icon.resize({ width: 16, height: 16 });
-    trayIcon.setTemplateImage(true);
+    try {
+        // Get the absolute path to the assets directory
+        const isDev = process.env.NODE_ENV === 'development';
+        const assetsPath = isDev
+            ? path.join(process.cwd(), 'assets')
+            : app.isPackaged
+                ? path.join(process.resourcesPath, 'assets')
+                : path.join(app.getAppPath(), 'assets');
 
-    tray = new Tray(trayIcon);
-    tray.setToolTip('Twitter Likes Archive');
+        const iconPath = path.join(assetsPath, 'icon.png');
+        if (!existsSync(iconPath)) {
+            throw new Error(`Icon file not found at ${iconPath}`);
+        }
 
-    const contextMenu = Menu.buildFromTemplate([
-      {
-        label: 'Show Dashboard',
-        click: () => showWindow()
-      },
-      {
-        label: 'Start Collection',
-        click: () => collectLikes('incremental')
-      },
-      { type: 'separator' },
-      {
-        label: 'Quit',
-        click: () => app.quit()
-      }
-    ]);
+        const icon = nativeImage.createFromPath(iconPath);
+        if (icon.isEmpty()) {
+            throw new Error(`Failed to load icon from path: ${iconPath}`);
+        }
 
-    tray.setContextMenu(contextMenu);
-    console.log('Tray created successfully');
-    return tray;
-  } catch (error) {
-    console.error('Failed to create tray:', error);
-    // Create a fallback tray with default icon
-    tray = new Tray(nativeImage.createEmpty());
-    tray.setToolTip('Twitter Likes Archive (Error)');
-    return tray;
-  }
+        // Create smaller icon for macOS menu bar
+        const trayIcon = process.platform === 'darwin'
+            ? icon.resize({ width: 16, height: 16 })
+            : icon;
+        trayIcon.setTemplateImage(true);
+
+        // Create the tray
+        tray = new Tray(trayIcon);
+        tray.setToolTip('Twitter Likes Archive');
+
+        // Create the context menu
+        const contextMenu = Menu.buildFromTemplate([
+            {
+                label: 'Show Dashboard',
+                click: () => showWindow()
+            },
+            {
+                label: 'Start Collection',
+                click: () => collectLikes('incremental')
+            },
+            { type: 'separator' },
+            {
+                label: 'Quit',
+                click: () => app.quit()
+            }
+        ]);
+
+        tray.setContextMenu(contextMenu);
+
+        // On macOS, clicking the tray icon shows the context menu
+        if (process.platform === 'darwin') {
+            tray.on('click', () => {
+                tray?.popUpContextMenu();
+            });
+        }
+
+        return tray;
+    } catch (error) {
+        console.error('Failed to create tray:', error);
+        throw error;
+    }
 }

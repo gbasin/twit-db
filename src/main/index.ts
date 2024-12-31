@@ -27,10 +27,10 @@ app.whenReady().then(async () => {
     await createWindow();
     console.log('Window created');
     
-    // Hide dock on macOS
-    if (process.platform === 'darwin') {
+    // Hide dock on macOS only in production
+    if (process.platform === 'darwin' && process.env.NODE_ENV !== 'development') {
       app.dock?.hide();
-      console.log('Dock hidden on macOS');
+      console.log('Dock hidden on macOS (production mode)');
     }
     
     console.log('App initialization complete');

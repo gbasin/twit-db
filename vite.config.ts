@@ -14,7 +14,9 @@ export default defineConfig({
       input: {
         main: path.resolve(__dirname, 'src/renderer/index.html')
       }
-    }
+    },
+    assetsDir: 'assets',
+    copyPublicDir: true
   },
   server: {
     port: 3000,
