@@ -96,15 +96,24 @@ export async function insertTweet(tweet: any) {
   try {
     console.log(`Inserting tweet ${tweet.id} by ${tweet.author}`);
     
+    // Start a transaction
+    await db.run('BEGIN TRANSACTION');
+    
     // Insert the tweet
     await db.run(
-      `INSERT INTO tweets (id, html, text_content, author, liked_at, first_seen_at, is_quote_tweet, has_media, has_links, is_deleted, card_type, card_data)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tweets (
+        id, html, text_content, author, display_name, handle,
+        liked_at, first_seen_at, is_quote_tweet, has_media,
+        has_links, is_deleted, card_type, card_data, metrics
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         tweet.id,
         tweet.html,
         tweet.text_content,
         tweet.author,
+        tweet.display_name,
+        tweet.handle,
         tweet.liked_at,
         tweet.first_seen_at,
         tweet.is_quote_tweet ? 1 : 0,
@@ -112,12 +121,32 @@ export async function insertTweet(tweet: any) {
         tweet.has_links ? 1 : 0,
         tweet.is_deleted ? 1 : 0,
         tweet.card_type,
-        tweet.card_data
+        tweet.card_data,
+        tweet.metrics ? JSON.stringify(tweet.metrics) : null
       ]
     );
-    console.log('Tweet inserted successfully');
+    
+    // Insert links if present
+    if (tweet.links && tweet.links.length > 0) {
+      for (const url of tweet.links) {
+        await db.run(
+          `INSERT INTO links (id, tweet_id, url, created_at)
+           VALUES (?, ?, ?, ?)`,
+          [
+            crypto.randomUUID(),
+            tweet.id,
+            url,
+            new Date().toISOString()
+          ]
+        );
+      }
+    }
+    
+    await db.run('COMMIT');
+    console.log('Tweet and links inserted successfully');
     return true;
   } catch (error) {
+    await db.run('ROLLBACK');
     console.error(`Failed to insert tweet ${tweet.id}:`, error);
     throw error;
   }
@@ -166,14 +195,25 @@ export async function searchTweets(query: string, filters: SearchFilters = {}) {
     : '';
 
   const results = await db.all(`
-    SELECT *
-    FROM tweets
+    SELECT t.*, GROUP_CONCAT(l.url) as link_urls
+    FROM tweets t
+    LEFT JOIN links l ON t.id = l.tweet_id
     ${whereClause}
+    GROUP BY t.id
     ORDER BY liked_at DESC
     LIMIT 50
   `, params);
 
-  return results;
+  // Process results to parse JSON fields and format links
+  return results.map((tweet: any) => ({
+    ...tweet,
+    metrics: tweet.metrics ? JSON.parse(tweet.metrics) : null,
+    links: tweet.link_urls ? tweet.link_urls.split(',') : [],
+    is_quote_tweet: !!tweet.is_quote_tweet,
+    has_media: !!tweet.has_media,
+    has_links: !!tweet.has_links,
+    is_deleted: !!tweet.is_deleted
+  }));
 }
 
 export async function initDatabase() {
@@ -222,6 +262,8 @@ export async function initDatabase() {
         html TEXT NOT NULL,
         text_content TEXT NOT NULL,
         author TEXT NOT NULL,
+        display_name TEXT,
+        handle TEXT,
         liked_at TIMESTAMP NOT NULL,
         first_seen_at TIMESTAMP NOT NULL,
         is_quote_tweet INTEGER DEFAULT 0,
@@ -229,10 +271,24 @@ export async function initDatabase() {
         has_links INTEGER DEFAULT 0,
         is_deleted INTEGER DEFAULT 0,
         card_type TEXT,
-        card_data TEXT
+        card_data TEXT,
+        metrics TEXT
       );
     `);
     console.log('Tweets table created');
+
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS links (
+        id TEXT PRIMARY KEY,
+        tweet_id TEXT NOT NULL,
+        url TEXT NOT NULL,
+        created_at TIMESTAMP NOT NULL,
+        FOREIGN KEY(tweet_id) REFERENCES tweets(id)
+      );
+      
+      CREATE INDEX IF NOT EXISTS idx_links_tweet_id ON links(tweet_id);
+    `);
+    console.log('Links table created');
 
     await db.exec(`
       CREATE TABLE IF NOT EXISTS media (
@@ -287,4 +343,13 @@ export async function tweetExists(tweetId: string): Promise<boolean> {
   const db = await initDatabase();
   const result = await db.get('SELECT id FROM tweets WHERE id = ?', [tweetId]);
   return !!result;
+}
+
+// Add function to get links for a tweet
+export async function getLinksForTweet(tweetId: string) {
+  const db = await initDatabase();
+  return db.all(
+    'SELECT url FROM links WHERE tweet_id = ? ORDER BY created_at ASC',
+    [tweetId]
+  );
 }

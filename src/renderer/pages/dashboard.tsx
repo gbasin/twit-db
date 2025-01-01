@@ -4,10 +4,19 @@ interface Tweet {
   id: string;
   text_content: string;
   author: string;
+  display_name: string;
+  handle: string;
   liked_at: string;
   has_media: boolean;
   has_links: boolean;
   html: string;
+  metrics: {
+    replies: string;
+    retweets: string;
+    likes: string;
+    views: string;
+  };
+  links: string[];
 }
 
 interface Media {
@@ -52,7 +61,8 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
 
   // Clean up text content by removing trailing metrics
   const cleanedText = tweet.text_content
-    .replace(/\n+[0-9]+\n+[0-9]+\s*$/, '') // Remove trailing metrics
+    .replace(/\n+[0-9]+(\n+[0-9]+)*\s*$/, '') // Remove trailing numbers/metrics
+    .replace(/\n+[0-9]+\s+[0-9]+\s*$/, '') // Remove engagement numbers
     .replace(/\n{3,}/g, '\n\n') // Normalize multiple newlines
     .trim();
 
@@ -132,7 +142,7 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
       {/* Author */}
       <div className="flex items-center gap-2 mb-2">
         <div className="font-bold text-gray-900">{displayName}</div>
-        <div className="text-gray-500">{handle}</div>
+        {handle && <div className="text-gray-500">{handle}</div>}
         <span className="text-gray-500">·</span>
         <div className="text-gray-500">
           {formatTimestamp(new Date(tweet.liked_at))}
@@ -266,7 +276,7 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
               Media
             </div>
           )}
-          {tweet.has_links && (
+          {tweet.links && tweet.links.length > 0 && (
             <div className="flex items-center gap-1" title="This tweet contains external links">
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path
@@ -278,6 +288,38 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
               </svg>
               Links
             </div>
+          )}
+        </div>
+        <div className="flex items-center gap-4">
+          {/* Engagement Metrics */}
+          {tweet.metrics && (
+            <>
+              <div className="flex items-center gap-1" title="Replies">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+                </svg>
+                {formatNumber(parseInt(tweet.metrics.replies))}
+              </div>
+              <div className="flex items-center gap-1" title="Retweets">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                </svg>
+                {formatNumber(parseInt(tweet.metrics.retweets))}
+              </div>
+              <div className="flex items-center gap-1" title="Likes">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
+                </svg>
+                {formatNumber(parseInt(tweet.metrics.likes))}
+              </div>
+              <div className="flex items-center gap-1" title="Views">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                </svg>
+                {formatNumber(parseInt(tweet.metrics.views))}
+              </div>
+            </>
           )}
         </div>
         <button 

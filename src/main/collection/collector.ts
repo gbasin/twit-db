@@ -423,8 +423,6 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
     // Extracting tweets from page...
     log('collection', 'extraction_start', { mode });
     const tweets = await page.$$eval('article', (articles: Element[]) => {
-      console.log(`Found ${articles.length} tweet articles on page`);
-      
       // Define extractMediaUrls in browser context
       function extractMediaUrls(article: Element) {
         const results = {
@@ -469,9 +467,9 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
         return results;
       }
 
-      const extracted = articles.map((el: Element) => {
+      // Return the raw data we need for logging
+      return articles.map((el: Element) => {
         const tweetId = el.querySelector('a[href*="/status/"]')?.getAttribute('href')?.split('/status/')[1] || '';
-        console.log(`Processing tweet ${tweetId}`);
         
         // Get the main tweet text content - look for all text content divs
         const tweetTextEls = el.querySelectorAll('[data-testid="tweetText"]');
@@ -479,16 +477,22 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
           .map(el => el.textContent || '')
           .join('\n\n')
           .trim();
+
+        // Get engagement metrics
+        const metrics = {
+          replies: el.querySelector('[data-testid="reply"]')?.textContent || '0',
+          retweets: el.querySelector('[data-testid="retweet"]')?.textContent || '0',
+          likes: el.querySelector('[data-testid="unlike"]')?.textContent || '0',
+          views: Array.from(el.querySelectorAll('[data-testid="app-text-transition-container"]'))
+            .pop()?.textContent || '0'
+        };
         
-        // Get author info - look for the User-Name element
+        // Get author info
         const authorEl = el.querySelector('[data-testid="User-Name"]');
-        let author = 'Unknown';
-        if (authorEl) {
-          const spans = authorEl.querySelectorAll('span');
-          const displayName = spans[0]?.textContent || '';
-          const handle = spans[spans.length - 1]?.textContent || '';
-          author = `${displayName} ${handle}`.trim();
-        }
+        const authorSpans = authorEl ? Array.from(authorEl.querySelectorAll('span')) : [];
+        const handleSpan = authorSpans.find(span => (span.textContent || '').includes('@'));
+        const displayName = authorSpans[0]?.textContent || '';
+        const handle = handleSpan?.textContent || '';
         
         // Extract media elements
         const mediaElements = extractMediaUrls(el);
@@ -506,35 +510,59 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
         const quotedTweet = el.querySelector('[data-testid="tweet"] article');
         const quotedText = quotedTweet ? quotedTweet.textContent || '' : '';
         
-        // Clean up text content
-        const cleanText = textContent.replace(/\s+/g, ' ').trim();
-        const finalText = quotedText 
-          ? `${cleanText}\n\nQuoted Tweet:\n${quotedText.replace(/\s+/g, ' ').trim()}`
-          : cleanText;
+        // Extract links from text content and cards
+        const textLinks = textContent.match(/https?:\/\/[^\s)]+/g) || [];
+        const cardLink = cardData?.url ? [cardData.url] : [];
+        const allLinks = [...new Set([...textLinks, ...cardLink])].filter(Boolean);
         
-        const result = {
+        // Clean up links (remove trailing punctuation, etc)
+        const cleanLinks = allLinks.map(link => {
+          // Remove trailing punctuation that might have been caught
+          return link.replace(/[.,;:!?]$/, '');
+        });
+
+        return {
           id: tweetId,
           html: el.innerHTML || '',
-          text_content: finalText,
-          author: author,
+          text_content: textContent,
+          display_name: displayName,
+          handle: handle,
+          author: handle ? `${displayName} ${handle}` : displayName,
           liked_at: new Date().toISOString(),
           first_seen_at: new Date().toISOString(),
           is_quote_tweet: !!quotedTweet,
           has_media: !!(mediaElements.images.length || mediaElements.videos.length || mediaElements.gifs.length),
-          has_links: !!el.querySelector('a[href*="//"]'),
+          has_links: cleanLinks.length > 0,
+          links: cleanLinks,
           is_deleted: false,
           card_type: cardData?.type || null,
           card_data: cardData ? JSON.stringify(cardData) : null,
-          _media: mediaElements
+          metrics: metrics,
+          _media: mediaElements,
+          _debug: { 
+            raw_text_elements: Array.from(tweetTextEls).map(el => el.textContent),
+            test_id_elements: Array.from(el.querySelectorAll('[data-testid]')).map(el => ({
+              testId: el.getAttribute('data-testid'),
+              text: el.textContent
+            }))
+          }
         };
-        
-        console.log(`Tweet ${tweetId} has: ${mediaElements.images.length} images, ${mediaElements.videos.length} videos, ${mediaElements.gifs.length} GIFs`);
-        return result;
       });
-      
-      console.log(`Successfully extracted ${extracted.length} tweets`);
-      return extracted;
     });
+
+    // Log the raw tweet data for debugging
+    for (const tweet of tweets) {
+      log('tweet_debug', 'raw_content', {
+        id: tweet.id,
+        raw_text_elements: tweet.raw_text_elements,
+        test_id_elements: tweet.test_id_elements,
+        links: tweet._debug.links
+      });
+      // Remove debug data before inserting
+      delete tweet.raw_text_elements;
+      delete tweet.test_id_elements;
+      delete tweet._debug;
+    }
 
     log('collection', 'extraction_complete', { 
       tweetCount: tweets.length,
