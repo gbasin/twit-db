@@ -12,5 +12,6 @@ interface Window {
       localPath: string;
       originalUrl: string;
     }>>;
+    getMediaData: (filePath: string) => Promise<string>;
   }
 } 

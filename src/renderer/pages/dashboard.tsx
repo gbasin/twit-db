@@ -41,6 +41,7 @@ function formatTimestamp(date: Date): string {
 const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const [media, setMedia] = useState<Media[]>([]);
+  const [mediaData, setMediaData] = useState<Record<string, string>>({});
   const [isLoadingMedia, setIsLoadingMedia] = useState(false);
   const shouldTruncate = tweet.text_content.length > 280;
 
@@ -50,12 +51,34 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
   useEffect(() => {
     if (tweet.has_media) {
       setIsLoadingMedia(true);
+      
+      // First get the media items
       window.api.getMediaForTweet(tweet.id)
-        .then(mediaItems => {
+        .then(async mediaItems => {
           setMedia(mediaItems);
+          
+          // Load media data sequentially instead of all at once
+          const mediaDataMap: Record<string, string> = {};
+          for (const item of mediaItems) {
+            try {
+              // Add a timeout to each media load
+              const mediaDataPromise = window.api.getMediaData(item.localPath);
+              const timeoutPromise = new Promise((_, reject) => {
+                setTimeout(() => reject(new Error('Media load timeout')), 5000);
+              });
+              
+              const mediaData = await Promise.race([mediaDataPromise, timeoutPromise]);
+              mediaDataMap[item.id] = mediaData as string;
+              // Update state incrementally as each media loads
+              setMediaData(current => ({...current, [item.id]: mediaData as string}));
+            } catch (error) {
+              console.error(`Failed to load media ${item.id}:`, error);
+              // Continue with other media items even if one fails
+            }
+          }
         })
         .catch(error => {
-          console.error('Failed to load media:', error);
+          console.error('Failed to load media metadata:', error);
         })
         .finally(() => {
           setIsLoadingMedia(false);
@@ -101,22 +124,28 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
             <div className={`grid gap-2 ${media.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>
               {media.map(item => (
                 <div key={item.id} className="relative aspect-video">
-                  {item.mediaType === 'video' || item.mediaType === 'gif' ? (
-                    <video
-                      src={`file://${item.localPath}`}
-                      controls={item.mediaType === 'video'}
-                      autoPlay={item.mediaType === 'gif'}
-                      loop={item.mediaType === 'gif'}
-                      muted={item.mediaType === 'gif'}
-                      className="w-full h-full object-cover rounded"
-                    />
+                  {mediaData[item.id] ? (
+                    item.mediaType === 'video' || item.mediaType === 'gif' ? (
+                      <video
+                        src={mediaData[item.id]}
+                        controls={item.mediaType === 'video'}
+                        autoPlay={item.mediaType === 'gif'}
+                        loop={item.mediaType === 'gif'}
+                        muted={item.mediaType === 'gif'}
+                        className="w-full h-full object-cover rounded"
+                      />
+                    ) : (
+                      <img
+                        src={mediaData[item.id]}
+                        alt="Tweet media"
+                        className="w-full h-full object-cover rounded"
+                        loading="lazy"
+                      />
+                    )
                   ) : (
-                    <img
-                      src={`file://${item.localPath}`}
-                      alt="Tweet media"
-                      className="w-full h-full object-cover rounded"
-                      loading="lazy"
-                    />
+                    <div className="w-full h-full bg-gray-100 rounded flex items-center justify-center">
+                      <span className="text-gray-500">Failed to load media</span>
+                    </div>
                   )}
                 </div>
               ))}

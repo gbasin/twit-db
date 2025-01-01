@@ -221,59 +221,6 @@ async function processMediaItems(mediaItems: Array<{
   return results;
 }
 
-// Extract media URLs from a tweet element
-function extractMediaUrls(article: Element): { 
-  images: { url: string }[],
-  videos: { url: string }[],
-  gifs: { url: string }[]
-} {
-  const results = {
-    images: [] as { url: string }[],
-    videos: [] as { url: string }[],
-    gifs: [] as { url: string }[]
-  };
-
-  try {
-    // Images: Look for high-res image URLs
-    results.images = Array.from(article.querySelectorAll('img[src*="pbs.twimg.com/media"]'))
-      .map(img => {
-        const src = (img as HTMLImageElement).src;
-        // Remove any existing format parameters
-        const baseUrl = src.split('?')[0];
-        return { url: baseUrl };
-      });
-
-    // Videos: Look for both video elements and video containers
-    results.videos = Array.from(article.querySelectorAll('video[src*="video.twimg.com"], div[data-testid="videoPlayer"]'))
-      .map(video => {
-        if (video instanceof HTMLVideoElement) {
-          return { url: video.src };
-        } else {
-          // For video players, try to find the source URL
-          const source = video.querySelector('source');
-          return { url: source?.src || '' };
-        }
-      })
-      .filter(v => v.url); // Remove any empty URLs
-
-    // GIFs: Look specifically for Twitter GIFs
-    results.gifs = Array.from(article.querySelectorAll('video[poster*="tweet_video_thumb"]'))
-      .map(gif => ({
-        url: (gif as HTMLVideoElement).src
-      }));
-
-    log('media_extraction', 'found_media', {
-      images: results.images.length,
-      videos: results.videos.length,
-      gifs: results.gifs.length
-    });
-  } catch (error) {
-    logError('media_extraction', 'extraction_failed', error);
-  }
-
-  return results;
-}
-
 export async function collectLikes(mode: 'incremental' | 'historical') {
   if (isCollecting) {
     console.log("Collection is already in progress.");
@@ -469,11 +416,58 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
     }
 
     console.log('Extracting tweets from page...');
-    // Simple example of extracting tweet data from "article" elements
+    // Extracting tweets from page...
+    log('collection', 'extraction_start', { mode });
     const tweets = await page.$$eval('article', (articles: Element[]) => {
-      return articles.map((el: Element) => {
-        // Extract basic tweet info
+      console.log(`Found ${articles.length} tweet articles on page`);
+      
+      // Define extractMediaUrls in browser context
+      function extractMediaUrls(article: Element) {
+        const results = {
+          images: [] as { url: string }[],
+          videos: [] as { url: string }[],
+          gifs: [] as { url: string }[]
+        };
+
+        try {
+          // Images: Look for high-res image URLs
+          results.images = Array.from(article.querySelectorAll('img[src*="pbs.twimg.com/media"]'))
+            .map(img => {
+              const src = (img as HTMLImageElement).src;
+              // Remove any existing format parameters
+              const baseUrl = src.split('?')[0];
+              return { url: baseUrl };
+            });
+
+          // Videos: Look for both video elements and video containers
+          results.videos = Array.from(article.querySelectorAll('video[src*="video.twimg.com"], div[data-testid="videoPlayer"]'))
+            .map(video => {
+              if (video instanceof HTMLVideoElement) {
+                return { url: video.src };
+              } else {
+                // For video players, try to find the source URL
+                const source = video.querySelector('source');
+                return { url: source?.src || '' };
+              }
+            })
+            .filter(v => v.url); // Remove any empty URLs
+
+          // GIFs: Look specifically for Twitter GIFs
+          results.gifs = Array.from(article.querySelectorAll('video[poster*="tweet_video_thumb"]'))
+            .map(gif => ({
+              url: (gif as HTMLVideoElement).src
+            }));
+
+        } catch (error) {
+          console.error('Media extraction failed:', error);
+        }
+
+        return results;
+      }
+
+      const extracted = articles.map((el: Element) => {
         const tweetId = el.querySelector('a[href*="/status/"]')?.getAttribute('href')?.split('/status/')[1] || '';
+        console.log(`Processing tweet ${tweetId}`);
         
         // Get the main tweet text content
         const tweetTextEl = el.querySelector('[data-testid="tweetText"]');
@@ -511,7 +505,7 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
           ? `${cleanText}\n\nQuoted Tweet:\n${quotedText.replace(/\s+/g, ' ').trim()}`
           : cleanText;
         
-        return {
+        const result = {
           id: tweetId,
           html: el.innerHTML || '',
           text_content: finalText,
@@ -526,18 +520,49 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
           card_data: cardData ? JSON.stringify(cardData) : null,
           _media: mediaElements
         };
+        
+        console.log(`Tweet ${tweetId} has: ${mediaElements.images.length} images, ${mediaElements.videos.length} videos, ${mediaElements.gifs.length} GIFs`);
+        return result;
       });
+      
+      console.log(`Successfully extracted ${extracted.length} tweets`);
+      return extracted;
+    });
+
+    log('collection', 'extraction_complete', { 
+      tweetCount: tweets.length,
+      tweetsWithMedia: tweets.filter((t: { has_media: boolean }) => t.has_media).length
     });
 
     // Insert into DB and process media
-    console.log(`Found ${tweets.length} tweets, saving to database...`);
+    log('collection', 'db_insert_start', { tweetCount: tweets.length });
     
     // First, insert all tweets
+    let insertedCount = 0;
     for (const tweet of tweets) {
       if (tweet.id) {
-        await insertTweet(tweet);
+        try {
+          await insertTweet(tweet);
+          insertedCount++;
+          log('collection', 'tweet_inserted', { 
+            tweetId: tweet.id, 
+            hasMedia: tweet.has_media,
+            mediaCount: tweet._media ? (
+              tweet._media.images.length + 
+              tweet._media.videos.length + 
+              tweet._media.gifs.length
+            ) : 0
+          });
+        } catch (error) {
+          logError('collection', 'tweet_insert_failed', error, { tweetId: tweet.id });
+        }
       }
     }
+
+    log('collection', 'db_insert_complete', { 
+      attempted: tweets.length,
+      inserted: insertedCount
+    });
 
     // Then, collect all media items to process in parallel
     const mediaItems: Array<{ tweetId: string; url: string; mediaType: string }> = [];
@@ -563,13 +588,34 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
 
     // Process all media items in parallel with concurrency control
     if (mediaItems.length > 0) {
-      console.log(`Processing ${mediaItems.length} media items...`);
+      log('collection', 'media_processing_start', { 
+        mediaCount: mediaItems.length,
+        byType: {
+          images: mediaItems.filter(m => m.mediaType === 'image').length,
+          videos: mediaItems.filter(m => m.mediaType === 'video').length,
+          gifs: mediaItems.filter(m => m.mediaType === 'gif').length
+        }
+      });
+      
       const results = await processMediaItems(mediaItems);
       const successCount = results.filter(r => r.success).length;
-      console.log(`Successfully processed ${successCount}/${mediaItems.length} media items`);
+      
+      log('collection', 'media_processing_complete', {
+        total: mediaItems.length,
+        successful: successCount,
+        failed: mediaItems.length - successCount
+      });
+    } else {
+      log('collection', 'no_media_found');
     }
 
-    console.log(`Finished ${mode} collection. Collected ${tweets.length} tweets.`);
+    log('collection', 'complete', {
+      mode,
+      tweetsCollected: tweets.length,
+      tweetsInserted: insertedCount,
+      mediaProcessed: mediaItems.length
+    });
+
     await currentBrowserContext.close();
     currentBrowserContext = null;
   } catch (error) {
