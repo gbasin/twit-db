@@ -45,8 +45,49 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
   const [isLoadingMedia, setIsLoadingMedia] = useState(false);
   const shouldTruncate = tweet.text_content.length > 280;
 
-  // Parse author string -> displayName, handle
-  const [displayName, handle] = tweet.author.split(/(@\w+)/).filter(Boolean);
+  // Extract display name and handle from author string
+  const authorParts = tweet.author.match(/^(.*?)(@[\w]+)?$/);
+  const displayName = authorParts?.[1]?.trim() || tweet.author;
+  const handle = authorParts?.[2]?.trim() || '';
+
+  // Clean up text content by removing trailing metrics
+  const cleanedText = tweet.text_content
+    .replace(/\n+[0-9]+\n+[0-9]+\s*$/, '') // Remove trailing metrics
+    .replace(/\n{3,}/g, '\n\n') // Normalize multiple newlines
+    .trim();
+
+  // Convert text with clickable links
+  const textWithLinks = () => {
+    let lastIndex = 0;
+    const parts = [];
+    const linkPattern = /https?:\/\/[^\s)]+/g;
+    let match;
+
+    while ((match = linkPattern.exec(cleanedText)) !== null) {
+      // Add text before the link
+      if (match.index > lastIndex) {
+        parts.push(cleanedText.slice(lastIndex, match.index));
+      }
+      // Add the link as a clickable element
+      parts.push(
+        <a
+          key={match.index}
+          href={match[0]}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-blue-600 hover:text-blue-700"
+        >
+          {match[0]}
+        </a>
+      );
+      lastIndex = linkPattern.lastIndex;
+    }
+    // Add remaining text after last link
+    if (lastIndex < cleanedText.length) {
+      parts.push(cleanedText.slice(lastIndex));
+    }
+    return parts;
+  };
 
   useEffect(() => {
     if (tweet.has_media) {
@@ -90,10 +131,10 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
     <div className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors shadow-sm">
       {/* Author */}
       <div className="flex items-center gap-2 mb-2">
-        <div className="font-bold text-gray-900" title="Display Name">{displayName}</div>
-        {handle && <div className="text-gray-500" title="Twitter Handle">{handle}</div>}
+        <div className="font-bold text-gray-900">{displayName}</div>
+        <div className="text-gray-500">{handle}</div>
         <span className="text-gray-500">·</span>
-        <div className="text-gray-500" title="When you liked this tweet">
+        <div className="text-gray-500">
           {formatTimestamp(new Date(tweet.liked_at))}
         </div>
       </div>
@@ -101,18 +142,14 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
       {/* Tweet Content */}
       <div className="mb-3">
         <div 
-          className={`${!isExpanded && shouldTruncate ? 'line-clamp-4' : ''} text-gray-800`}
-          title={shouldTruncate && !isExpanded ? "Click 'Show more' to see full text" : undefined}
+          className={`${!isExpanded && shouldTruncate ? 'line-clamp-4' : ''} text-gray-800 whitespace-pre-wrap`}
         >
-          {tweet.text_content.split('\n\n').map((block, i) => (
-            <p key={i} className="mb-2 last:mb-0">{block}</p>
-          ))}
+          {textWithLinks()}
         </div>
         {shouldTruncate && (
           <button
             onClick={() => setIsExpanded(!isExpanded)}
-            className="text-blue-600 hover:text-blue-700 text-sm"
-            title={isExpanded ? "Collapse tweet text" : "Show full tweet text"}
+            className="text-blue-600 hover:text-blue-700 text-sm mt-1"
           >
             {isExpanded ? 'Show less' : 'Show more'}
           </button>
