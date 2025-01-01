@@ -1,5 +1,5 @@
 import { chromium } from 'playwright';
-import { insertTweet, insertMedia, DIRS, mediaExists, tweetExists } from '../storage/db';
+import { insertTweet, insertMedia, DIRS, mediaExists, tweetExists, insertThreadTweet, updateThreadMetadata, getHighestLikeOrder } from '../storage/db';
 import path from 'path';
 import { app } from 'electron';
 import fs from 'fs/promises';
@@ -433,7 +433,12 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
     console.log('Extracting tweets from page...');
     // Extracting tweets from page...
     log('collection', 'extraction_start', { mode });
-    const tweets = await page.$$eval('article', async (articles: Element[]) => {
+
+    // Get the starting like_order for new tweets
+    const startingLikeOrder = await getHighestLikeOrder();
+    log('collection', 'like_order_start', { startingLikeOrder });
+
+    const tweets = await page.$$eval('article', async (articles: Element[], startOrder: number) => {
       // Define extractMediaUrls in browser context
       function extractMediaUrls(article: Element) {
         const results = {
@@ -478,9 +483,37 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
         return results;
       }
 
+      // Helper to extract tweet ID from URL
+      function extractTweetId(url: string): string | null {
+        const match = url.match(/\/status\/(\d+)/);
+        return match ? match[1] : null;
+      }
+
+      const now = new Date();
+      // Since tweets are in reverse chronological order of likes,
+      // subtract a small increment for each one to maintain relative order
+      const MINUTES_BETWEEN_LIKES = 1;
+
       // Return the raw data we need for logging
-      return await Promise.all(articles.map(async (el: Element) => {
-        const tweetId = el.querySelector('a[href*="/status/"]')?.getAttribute('href')?.split('/status/')[1] || '';
+      return await Promise.all(articles.map(async (el: Element, index: number) => {
+        const tweetUrl = el.querySelector('a[href*="/status/"]')?.getAttribute('href') || '';
+        const tweetId = extractTweetId(tweetUrl) || '';
+        
+        // Get thread information
+        const inReplyToLink = el.querySelector('div[data-testid="tweet"] a[href*="/status/"]');
+        const inReplyToUrl = inReplyToLink?.getAttribute('href') || '';
+        const inReplyToId = extractTweetId(inReplyToUrl);
+        
+        // Get conversation ID (used for thread tracking)
+        const conversationId = el.closest('[data-testid="cellInnerDiv"]')
+          ?.getAttribute('data-conversation-id') || tweetId;
+
+        // Get tweet timestamp
+        const timestampEl = el.querySelector('time');
+        const tweetTimestamp = timestampEl?.getAttribute('datetime') || new Date().toISOString();
+
+        // Check if this is a thread tweet
+        const isThreadTweet = inReplyToId && el.querySelector(`a[href*="${inReplyToId}"]`);
         
         // Get the main tweet text content - look for all text content divs
         const tweetTextEls = el.querySelectorAll('[data-testid="tweetText"]');
@@ -539,8 +572,8 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
           display_name: displayName,
           handle: handle,
           author: handle ? `${displayName} ${handle}` : displayName,
-          liked_at: new Date().toISOString(),
-          first_seen_at: new Date().toISOString(),
+          created_at: tweetTimestamp,  // When the tweet was posted
+          like_order: startOrder + index,  // Use offset from highest existing order
           is_quote_tweet: !!quotedTweet,
           has_media: !!(mediaElements.images.length || mediaElements.videos.length || mediaElements.gifs.length),
           has_links: cleanLinks.length > 0,
@@ -550,6 +583,8 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
           card_data: cardData ? JSON.stringify(cardData) : null,
           metrics: metrics,
           _media: mediaElements,
+          in_reply_to_id: inReplyToId || null,
+          conversation_id: conversationId,
           _debug: { 
             raw_text_elements: Array.from(tweetTextEls).map(el => el.textContent),
             test_id_elements: Array.from(el.querySelectorAll('[data-testid]')).map(el => ({
@@ -559,7 +594,68 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
           }
         };
       }));
-    });
+    }, startingLikeOrder);
+
+    // After extracting tweets, collect thread tweets
+    log('collection', 'thread_collection_start');
+    for (const tweet of tweets) {
+      if (tweet.conversation_id && tweet.author) {
+        try {
+          // Navigate to the conversation/thread view
+          await page.goto(`https://twitter.com/i/status/${tweet.conversation_id}`, {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000
+          });
+          
+          // Wait for tweets to load
+          await page.waitForSelector('article', { timeout: 10000 });
+          
+          // Extract all tweets in the thread by the same author
+          const threadTweets = await page.$$eval('article', (articles: Element[], originalAuthor: string) => {
+            return articles
+              .map(article => {
+                const authorEl = article.querySelector('[data-testid="User-Name"]');
+                const author = authorEl?.textContent || '';
+                const tweetId = article.querySelector('a[href*="/status/"]')?.getAttribute('href')?.split('/status/')[1] || '';
+                
+                return {
+                  id: tweetId,
+                  author,
+                  isOriginalAuthor: author.includes(originalAuthor)
+                };
+              })
+              .filter(t => t.isOriginalAuthor)
+              .map((t, index) => ({
+                id: t.id,
+                position: index + 1
+              }));
+          }, tweet.author);
+          
+          // If we found thread tweets, process them
+          if (threadTweets.length > 1) {
+            const threadId = threadTweets[0].id;
+            log('collection', 'thread_found', {
+              threadId,
+              tweetCount: threadTweets.length
+            });
+            
+            // Mark the first tweet as thread start and update length
+            await updateThreadMetadata(threadId, threadTweets.length);
+            
+            // Insert thread relationships
+            for (const threadTweet of threadTweets) {
+              await insertThreadTweet(threadId, threadTweet.id, threadTweet.position);
+            }
+          }
+        } catch (error) {
+          logError('collection', 'thread_collection_failed', error, {
+            tweetId: tweet.id,
+            conversationId: tweet.conversation_id
+          });
+        }
+      }
+    }
+    log('collection', 'thread_collection_complete');
 
     // After extracting tweets, resolve URLs
     for (const tweet of tweets) {

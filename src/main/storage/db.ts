@@ -270,18 +270,41 @@ export async function initDatabase() {
         author TEXT NOT NULL,
         display_name TEXT,
         handle TEXT,
-        liked_at TIMESTAMP NOT NULL,
-        first_seen_at TIMESTAMP NOT NULL,
+        created_at TIMESTAMP NOT NULL,
+        like_order INTEGER NOT NULL,
         is_quote_tweet INTEGER DEFAULT 0,
         has_media INTEGER DEFAULT 0,
         has_links INTEGER DEFAULT 0,
         is_deleted INTEGER DEFAULT 0,
         card_type TEXT,
         card_data TEXT,
-        metrics TEXT
+        metrics TEXT,
+        in_reply_to_id TEXT,
+        conversation_id TEXT,
+        thread_position INTEGER,
+        is_thread_start INTEGER DEFAULT 0,
+        thread_length INTEGER DEFAULT 1
       );
+
+      -- Add index for sorting by like order
+      CREATE INDEX IF NOT EXISTS idx_tweets_like_order ON tweets(like_order);
     `);
     console.log('Tweets table created');
+
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS thread_tweets (
+        thread_id TEXT NOT NULL,
+        tweet_id TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        PRIMARY KEY(thread_id, tweet_id),
+        FOREIGN KEY(thread_id) REFERENCES tweets(id),
+        FOREIGN KEY(tweet_id) REFERENCES tweets(id)
+      );
+      
+      CREATE INDEX IF NOT EXISTS idx_thread_tweets_thread_id ON thread_tweets(thread_id);
+      CREATE INDEX IF NOT EXISTS idx_thread_tweets_tweet_id ON thread_tweets(tweet_id);
+    `);
+    console.log('Thread tweets table created');
 
     await db.exec(`
       CREATE TABLE IF NOT EXISTS links (
@@ -359,4 +382,64 @@ export async function getLinksForTweet(tweetId: string) {
     'SELECT url FROM links WHERE tweet_id = ? ORDER BY created_at ASC',
     [tweetId]
   );
+}
+
+// Insert thread relationship
+export async function insertThreadTweet(threadId: string, tweetId: string, position: number) {
+  const db = await initDatabase();
+  await db.run(
+    'INSERT OR REPLACE INTO thread_tweets (thread_id, tweet_id, position) VALUES (?, ?, ?)',
+    [threadId, tweetId, position]
+  );
+}
+
+// Get all tweets in a thread
+export async function getThreadTweets(threadId: string) {
+  const db = await initDatabase();
+  return db.all(`
+    SELECT t.*, tt.position as thread_position
+    FROM tweets t
+    JOIN thread_tweets tt ON t.id = tt.tweet_id
+    WHERE tt.thread_id = ?
+    ORDER BY tt.position ASC
+  `, [threadId]);
+}
+
+// Update thread metadata
+export async function updateThreadMetadata(threadId: string, length: number) {
+  const db = await initDatabase();
+  await db.run(
+    'UPDATE tweets SET is_thread_start = 1, thread_length = ? WHERE id = ?',
+    [length, threadId]
+  );
+}
+
+// Check if tweet is part of a thread
+export async function isInThread(tweetId: string): Promise<boolean> {
+  const db = await initDatabase();
+  const result = await db.get(
+    'SELECT 1 FROM thread_tweets WHERE tweet_id = ? LIMIT 1',
+    [tweetId]
+  );
+  return !!result;
+}
+
+// Get thread start tweet for a tweet in a thread
+export async function getThreadStart(tweetId: string) {
+  const db = await initDatabase();
+  return db.get(`
+    SELECT t.*
+    FROM tweets t
+    JOIN thread_tweets tt ON t.id = tt.thread_id
+    WHERE tt.tweet_id = ?
+    AND t.is_thread_start = 1
+    LIMIT 1
+  `, [tweetId]);
+}
+
+// Get the highest like_order value
+export async function getHighestLikeOrder(): Promise<number> {
+  const db = await initDatabase();
+  const result = await db.get('SELECT MAX(like_order) as max_order FROM tweets');
+  return (result?.max_order ?? -1) + 1;
 }

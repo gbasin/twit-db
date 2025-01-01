@@ -13,5 +13,6 @@ interface Window {
       originalUrl: string;
     }>>;
     getMediaData: (filePath: string) => Promise<string>;
+    getThreadTweets: (threadId: string) => Promise<any[]>;
   }
 } 

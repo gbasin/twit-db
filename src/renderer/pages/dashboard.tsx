@@ -6,7 +6,8 @@ interface Tweet {
   author: string;
   display_name: string;
   handle: string;
-  liked_at: string;
+  created_at: string;
+  like_order: number;
   has_media: boolean;
   has_links: boolean;
   html: string;
@@ -20,6 +21,10 @@ interface Tweet {
     originalUrl: string;
     resolvedUrl: string;
   }>;
+  in_reply_to_id?: string;
+  conversation_id?: string;
+  is_thread_start?: boolean;
+  thread_length?: number;
 }
 
 interface Media {
@@ -40,17 +45,71 @@ function formatNumber(num: number): string {
 }
 
 function formatTimestamp(date: Date): string {
-  return date.toLocaleString('en-US', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
-  });
+  const now = new Date();
+  const diffInHours = (now.getTime() - date.getTime()) / (1000 * 60 * 60);
+  
+  if (diffInHours < 24) {
+    // For tweets less than 24h old, show relative time
+    if (diffInHours < 1) {
+      const minutes = Math.floor(diffInHours * 60);
+      return `${minutes}m`;
+    }
+    return `${Math.floor(diffInHours)}h`;
+  } else if (diffInHours < 24 * 7) {
+    // For tweets less than a week old, show days
+    return `${Math.floor(diffInHours / 24)}d`;
+  } else {
+    // For older tweets, show the date
+    return date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined
+    });
+  }
 }
 
-const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
+const ThreadView: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
+  const [threadTweets, setThreadTweets] = useState<Tweet[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const loadThreadTweets = async () => {
+      if (!tweet.is_thread_start) return;
+      
+      setIsLoading(true);
+      try {
+        const tweets = await window.api.getThreadTweets(tweet.id);
+        setThreadTweets(tweets);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load thread');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadThreadTweets();
+  }, [tweet.id]);
+
+  if (!tweet.is_thread_start) return null;
+  if (isLoading) return <div className="text-gray-500">Loading thread...</div>;
+  if (error) return <div className="text-red-500">{error}</div>;
+
+  return (
+    <div className="mt-4 space-y-4">
+      <div className="border-l-2 border-blue-200 pl-4 space-y-4">
+        {threadTweets.slice(1).map((threadTweet) => (
+          <div key={threadTweet.id} className="relative">
+            <div className="absolute -left-4 top-0 w-2 h-2 bg-blue-200 rounded-full"></div>
+            <TweetCard tweet={threadTweet} isThreadItem />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const TweetCard: React.FC<{ tweet: Tweet; isThreadItem?: boolean }> = ({ tweet, isThreadItem = false }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const [media, setMedia] = useState<Media[]>([]);
   const [mediaData, setMediaData] = useState<Record<string, string>>({});
@@ -141,15 +200,32 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
   }, [tweet.id]);
 
   return (
-    <div className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors shadow-sm">
+    <div className={`border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors shadow-sm ${
+      isThreadItem ? 'border-l-0 rounded-l-none' : ''
+    }`}>
       {/* Author */}
       <div className="flex items-center gap-2 mb-2">
         <div className="font-bold text-gray-900">{displayName}</div>
         {handle && <div className="text-gray-500">{handle}</div>}
         <span className="text-gray-500">·</span>
-        <div className="text-gray-500">
-          {formatTimestamp(new Date(tweet.liked_at))}
+        <div 
+          className="text-gray-500"
+          title={new Date(tweet.created_at).toLocaleString('en-US', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+            hour12: true
+          })}
+        >
+          {formatTimestamp(new Date(tweet.created_at))}
         </div>
+        {tweet.is_thread_start && (
+          <div className="ml-2 px-2 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full">
+            Thread ({tweet.thread_length} tweets)
+          </div>
+        )}
       </div>
 
       {/* Tweet Content */}
@@ -288,6 +364,9 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
           ) : null}
         </div>
       )}
+
+      {/* Thread View */}
+      {!isThreadItem && <ThreadView tweet={tweet} />}
 
       {/* Footer */}
       <div className="flex items-center justify-between text-sm text-gray-500">
