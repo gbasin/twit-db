@@ -166,6 +166,25 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
         )}
       </div>
 
+      {/* Links Section */}
+      {tweet.links && tweet.links.length > 0 && (
+        <div className="mb-3">
+          <div className="flex flex-col gap-1">
+            {tweet.links.map((link, index) => (
+              <a
+                key={index}
+                href={link}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-600 hover:text-blue-700 truncate"
+              >
+                {link}
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Media Preview */}
       {tweet.has_media && (
         <div className="mb-3">
