@@ -98,7 +98,7 @@ export async function insertTweet(tweet: any) {
     
     // Insert the tweet
     await db.run(
-      `INSERT OR REPLACE INTO tweets (id, html, text_content, author, liked_at, first_seen_at, is_quote_tweet, has_media, has_links, is_deleted, card_type, card_data)
+      `INSERT INTO tweets (id, html, text_content, author, liked_at, first_seen_at, is_quote_tweet, has_media, has_links, is_deleted, card_type, card_data)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         tweet.id,
@@ -246,6 +246,10 @@ export async function initDatabase() {
         FOREIGN KEY(tweet_id) REFERENCES tweets(id),
         FOREIGN KEY(media_type_id) REFERENCES media_types(id)
       );
+      
+      -- Add index for faster media existence checks
+      CREATE INDEX IF NOT EXISTS idx_media_tweet_url 
+      ON media(tweet_id, original_url);
     `);
     console.log('Media table created');
 
