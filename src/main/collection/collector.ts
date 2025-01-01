@@ -213,6 +213,16 @@ async function resolveUrl(url: string): Promise<string> {
   }
 }
 
+interface ThreadTweet {
+  id: string;
+  position: number;
+  debug?: {
+    rawAuthorText: string;
+    originalAuthor: string;
+    authorMatch: boolean;
+  };
+}
+
 export async function collectLikes(mode: 'incremental' | 'historical') {
   if (isCollecting) {
     console.log("Collection is already in progress.");
@@ -600,9 +610,19 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
     log('collection', 'thread_collection_start');
     for (const tweet of tweets) {
       if (tweet.conversation_id && tweet.author) {
+        log('thread_debug', 'checking_tweet', {
+          tweetId: tweet.id,
+          conversationId: tweet.conversation_id,
+          author: tweet.author,
+          inReplyToId: tweet.in_reply_to_id
+        });
+
         try {
           // Navigate to the conversation/thread view
-          await page.goto(`https://twitter.com/i/status/${tweet.conversation_id}`, {
+          const threadUrl = `https://twitter.com/i/status/${tweet.conversation_id}`;
+          log('thread_debug', 'loading_thread_page', { url: threadUrl });
+          
+          await page.goto(threadUrl, {
             waitUntil: 'domcontentloaded',
             timeout: 30000
           });
@@ -612,7 +632,7 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
           
           // Extract all tweets in the thread by the same author
           const threadTweets = await page.$$eval('article', (articles: Element[], originalAuthor: string) => {
-            return articles
+            const results = articles
               .map(article => {
                 const authorEl = article.querySelector('[data-testid="User-Name"]');
                 const author = authorEl?.textContent || '';
@@ -621,31 +641,74 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
                 return {
                   id: tweetId,
                   author,
-                  isOriginalAuthor: author.includes(originalAuthor)
+                  isOriginalAuthor: author.includes(originalAuthor),
+                  debug: {
+                    rawAuthorText: author,
+                    originalAuthor,
+                    authorMatch: author.includes(originalAuthor)
+                  }
                 };
               })
               .filter(t => t.isOriginalAuthor)
               .map((t, index) => ({
                 id: t.id,
-                position: index + 1
+                position: index + 1,
+                debug: t.debug
               }));
+
+            return {
+              tweets: results,
+              debug: {
+                totalArticles: articles.length,
+                filteredCount: results.length
+              }
+            };
           }, tweet.author);
           
+          log('thread_debug', 'thread_extraction_result', {
+            originalTweetId: tweet.id,
+            ...threadTweets.debug,
+            tweets: threadTweets.tweets.map((t: ThreadTweet) => ({
+              id: t.id,
+              position: t.position,
+              debug: t.debug
+            }))
+          });
+
           // If we found thread tweets, process them
-          if (threadTweets.length > 1) {
-            const threadId = threadTweets[0].id;
+          if (threadTweets.tweets.length > 1) {
+            const threadId = threadTweets.tweets[0].id;
             log('collection', 'thread_found', {
               threadId,
-              tweetCount: threadTweets.length
+              tweetCount: threadTweets.tweets.length,
+              tweets: threadTweets.tweets.map((t: ThreadTweet) => ({
+                id: t.id,
+                position: t.position,
+                debug: t.debug
+              }))
             });
             
             // Mark the first tweet as thread start and update length
-            await updateThreadMetadata(threadId, threadTweets.length);
+            await updateThreadMetadata(threadId, threadTweets.tweets.length);
+            log('thread_debug', 'thread_metadata_updated', {
+              threadId,
+              length: threadTweets.tweets.length
+            });
             
             // Insert thread relationships
-            for (const threadTweet of threadTweets) {
+            for (const threadTweet of threadTweets.tweets) {
               await insertThreadTweet(threadId, threadTweet.id, threadTweet.position);
+              log('thread_debug', 'thread_relationship_inserted', {
+                threadId,
+                tweetId: threadTweet.id,
+                position: threadTweet.position
+              });
             }
+          } else {
+            log('thread_debug', 'no_thread_found', {
+              tweetId: tweet.id,
+              foundTweets: threadTweets.tweets.length
+            });
           }
         } catch (error) {
           logError('collection', 'thread_collection_failed', error, {
@@ -653,6 +716,12 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
             conversationId: tweet.conversation_id
           });
         }
+      } else {
+        log('thread_debug', 'skipping_tweet', {
+          tweetId: tweet.id,
+          hasConversationId: !!tweet.conversation_id,
+          hasAuthor: !!tweet.author
+        });
       }
     }
     log('collection', 'thread_collection_complete');

@@ -103,7 +103,7 @@ export async function insertTweet(tweet: any) {
     await db.run(
       `INSERT INTO tweets (
         id, html, text_content, author, display_name, handle,
-        liked_at, first_seen_at, is_quote_tweet, has_media,
+        created_at, like_order, is_quote_tweet, has_media,
         has_links, is_deleted, card_type, card_data, metrics
       )
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -114,8 +114,8 @@ export async function insertTweet(tweet: any) {
         tweet.author,
         tweet.display_name,
         tweet.handle,
-        tweet.liked_at,
-        tweet.first_seen_at,
+        tweet.created_at,
+        tweet.like_order,
         tweet.is_quote_tweet ? 1 : 0,
         tweet.has_media ? 1 : 0,
         tweet.has_links ? 1 : 0,
@@ -161,7 +161,7 @@ export async function searchTweets(query: string, filters: SearchFilters = {}) {
 
   // Date range filter
   if (filters.dateRange) {
-    conditions.push('liked_at BETWEEN ? AND ?');
+    conditions.push('created_at BETWEEN ? AND ?');
     params.push(filters.dateRange.start.toISOString());
     params.push(filters.dateRange.end.toISOString());
   }
@@ -203,7 +203,7 @@ export async function searchTweets(query: string, filters: SearchFilters = {}) {
     LEFT JOIN links l ON t.id = l.tweet_id
     ${whereClause}
     GROUP BY t.id
-    ORDER BY liked_at DESC
+    ORDER BY like_order DESC
     LIMIT 50
   `, params);
 
@@ -379,13 +379,14 @@ export async function tweetExists(tweetId: string): Promise<boolean> {
 export async function getLinksForTweet(tweetId: string) {
   const db = await initDatabase();
   return db.all(
-    'SELECT url FROM links WHERE tweet_id = ? ORDER BY created_at ASC',
+    'SELECT original_url, resolved_url FROM links WHERE tweet_id = ? ORDER BY created_at ASC',
     [tweetId]
   );
 }
 
 // Insert thread relationship
 export async function insertThreadTweet(threadId: string, tweetId: string, position: number) {
+  console.log('DB: Inserting thread relationship', { threadId, tweetId, position });
   const db = await initDatabase();
   await db.run(
     'INSERT OR REPLACE INTO thread_tweets (thread_id, tweet_id, position) VALUES (?, ?, ?)',
@@ -395,39 +396,60 @@ export async function insertThreadTweet(threadId: string, tweetId: string, posit
 
 // Get all tweets in a thread
 export async function getThreadTweets(threadId: string) {
+  console.log('DB: Getting thread tweets', { threadId });
   const db = await initDatabase();
-  return db.all(`
+  const tweets = await db.all(`
     SELECT t.*, tt.position as thread_position
     FROM tweets t
     JOIN thread_tweets tt ON t.id = tt.tweet_id
     WHERE tt.thread_id = ?
     ORDER BY tt.position ASC
   `, [threadId]);
+  console.log('DB: Retrieved thread tweets', { 
+    threadId, 
+    count: tweets.length,
+    tweets: tweets.map((t: { id: string; thread_position: number }) => ({ id: t.id, position: t.thread_position }))
+  });
+  return tweets;
 }
 
 // Update thread metadata
 export async function updateThreadMetadata(threadId: string, length: number) {
+  console.log('DB: Updating thread metadata', { threadId, length });
   const db = await initDatabase();
   await db.run(
     'UPDATE tweets SET is_thread_start = 1, thread_length = ? WHERE id = ?',
     [length, threadId]
   );
+  
+  // Verify the update
+  const tweet = await db.get(
+    'SELECT id, is_thread_start, thread_length FROM tweets WHERE id = ?',
+    [threadId]
+  );
+  console.log('DB: Thread metadata updated', { 
+    threadId, 
+    result: tweet 
+  });
 }
 
 // Check if tweet is part of a thread
 export async function isInThread(tweetId: string): Promise<boolean> {
+  console.log('DB: Checking if tweet is in thread', { tweetId });
   const db = await initDatabase();
   const result = await db.get(
     'SELECT 1 FROM thread_tweets WHERE tweet_id = ? LIMIT 1',
     [tweetId]
   );
+  console.log('DB: Thread check result', { tweetId, isInThread: !!result });
   return !!result;
 }
 
 // Get thread start tweet for a tweet in a thread
 export async function getThreadStart(tweetId: string) {
+  console.log('DB: Getting thread start tweet', { tweetId });
   const db = await initDatabase();
-  return db.get(`
+  const result = await db.get(`
     SELECT t.*
     FROM tweets t
     JOIN thread_tweets tt ON t.id = tt.thread_id
@@ -435,6 +457,12 @@ export async function getThreadStart(tweetId: string) {
     AND t.is_thread_start = 1
     LIMIT 1
   `, [tweetId]);
+  console.log('DB: Thread start result', { 
+    tweetId, 
+    found: !!result,
+    threadStartId: result?.id 
+  });
+  return result;
 }
 
 // Get the highest like_order value
@@ -442,4 +470,86 @@ export async function getHighestLikeOrder(): Promise<number> {
   const db = await initDatabase();
   const result = await db.get('SELECT MAX(like_order) as max_order FROM tweets');
   return (result?.max_order ?? -1) + 1;
+}
+
+// Get tweets with filters
+export async function getTweets(query: string, filters: any = {}) {
+  const db = await initDatabase();
+
+  const conditions: string[] = [];
+  const params: any[] = [];
+
+  // Date range filter
+  if (filters.dateRange) {
+    conditions.push('created_at BETWEEN ? AND ?');
+    params.push(filters.dateRange.start.toISOString());
+    params.push(filters.dateRange.end.toISOString());
+  }
+
+  // Media filter
+  if (filters.hasMedia !== undefined) {
+    conditions.push('has_media = ?');
+    params.push(filters.hasMedia ? 1 : 0);
+  }
+
+  // Links filter
+  if (filters.hasLinks !== undefined) {
+    conditions.push('has_links = ?');
+    params.push(filters.hasLinks ? 1 : 0);
+  }
+
+  // Author filter
+  if (filters.author) {
+    conditions.push('author = ?');
+    params.push(filters.author);
+  }
+
+  // Text search
+  if (query) {
+    conditions.push('(text_content LIKE ? OR author LIKE ?)');
+    const likePattern = `%${query}%`;
+    params.push(likePattern, likePattern);
+  }
+
+  const whereClause = conditions.length > 0 
+    ? `WHERE ${conditions.join(' AND ')}`
+    : '';
+
+  const results = await db.all(`
+    SELECT t.*, 
+      GROUP_CONCAT(l.original_url) as original_urls,
+      GROUP_CONCAT(l.resolved_url) as resolved_urls
+    FROM tweets t
+    LEFT JOIN links l ON t.id = l.tweet_id
+    ${whereClause}
+    GROUP BY t.id
+    ORDER BY like_order DESC
+    LIMIT 50
+  `, params);
+
+  return results.map((tweet: any) => ({
+    ...tweet,
+    metrics: tweet.metrics ? JSON.parse(tweet.metrics) : null,
+    links: tweet.original_urls ? tweet.original_urls.split(',').map((originalUrl: string, index: number) => ({
+      originalUrl,
+      resolvedUrl: tweet.resolved_urls.split(',')[index]
+    })) : [],
+    is_quote_tweet: !!tweet.is_quote_tweet,
+    has_media: !!tweet.has_media,
+    has_links: !!tweet.has_links,
+    is_deleted: !!tweet.is_deleted
+  }));
+}
+
+// Force recreate database
+export async function recreateDatabase() {
+  _db = null;
+  const dbPath = path.join(DIRS.db, 'tweets.db');
+  try {
+    await fs.unlink(dbPath);
+    console.log('Deleted existing database');
+  } catch (error) {
+    // Ignore if file doesn't exist
+  }
+  return initDatabase();
 }

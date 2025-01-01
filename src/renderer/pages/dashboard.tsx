@@ -75,13 +75,38 @@ const ThreadView: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
 
   useEffect(() => {
     const loadThreadTweets = async () => {
-      if (!tweet.is_thread_start) return;
+      if (!tweet.is_thread_start) {
+        console.log('ThreadView: Not a thread start tweet', { 
+          tweetId: tweet.id, 
+          is_thread_start: tweet.is_thread_start,
+          thread_length: tweet.thread_length 
+        });
+        return;
+      }
+      
+      console.log('ThreadView: Loading thread tweets', { 
+        threadId: tweet.id,
+        expectedLength: tweet.thread_length
+      });
       
       setIsLoading(true);
       try {
         const tweets = await window.api.getThreadTweets(tweet.id);
+        console.log('ThreadView: Loaded thread tweets', {
+          threadId: tweet.id,
+          loadedTweets: tweets.length,
+          tweets: tweets.map(t => ({ 
+            id: t.id, 
+            position: t.thread_position,
+            author: t.author
+          }))
+        });
         setThreadTweets(tweets);
       } catch (err) {
+        console.error('ThreadView: Failed to load thread', {
+          threadId: tweet.id,
+          error: err
+        });
         setError(err instanceof Error ? err.message : 'Failed to load thread');
       } finally {
         setIsLoading(false);
