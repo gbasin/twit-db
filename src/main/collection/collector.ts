@@ -121,95 +121,60 @@ async function downloadMedia(url: string, tweetId: string): Promise<string> {
   }
 }
 
-// Process media items with concurrency control
+// Process media items sequentially
 async function processMediaItems(mediaItems: Array<{
   tweetId: string;
   url: string;
   mediaType: string;
-}>, concurrency = 5) {
-  log('media_processing', 'start', { 
-    totalItems: mediaItems.length,
-    concurrency 
-  });
+}>) {
+  log('media_processing', 'start', { totalItems: mediaItems.length });
 
-  const queue = [...mediaItems];
-  const inProgress = new Set<Promise<void>>();
   const results: Array<{ success: boolean; error?: Error }> = [];
   const stats = {
     total: mediaItems.length,
     completed: 0,
     successful: 0,
-    failed: 0,
-    inProgress: 0
+    failed: 0
   };
 
   const logStats = () => {
     log('media_processing', 'stats', stats);
   };
 
-  while (queue.length > 0 || inProgress.size > 0) {
-    // Fill up the concurrent slots
-    while (queue.length > 0 && inProgress.size < concurrency) {
-      const item = queue.shift()!;
-      stats.inProgress++;
-      
-      log('media_processing', 'item_start', {
+  // Process items one at a time
+  for (const item of mediaItems) {
+    log('media_processing', 'item_start', {
+      tweetId: item.tweetId,
+      mediaType: item.mediaType,
+      remaining: mediaItems.length - stats.completed
+    });
+
+    try {
+      const localPath = await downloadMedia(item.url, item.tweetId);
+      await insertMedia({
         tweetId: item.tweetId,
         mediaType: item.mediaType,
-        queueRemaining: queue.length,
-        inProgress: inProgress.size
+        originalUrl: item.url,
+        localPath,
       });
-
-      const promise = (async () => {
-        try {
-          const localPath = await downloadMedia(item.url, item.tweetId);
-          await insertMedia({
-            tweetId: item.tweetId,
-            mediaType: item.mediaType,
-            originalUrl: item.url,
-            localPath,
-          });
-          results.push({ success: true });
-          stats.successful++;
-          log('media_processing', 'item_complete', {
-            tweetId: item.tweetId,
-            mediaType: item.mediaType,
-            localPath
-          });
-        } catch (error) {
-          results.push({ success: false, error: error as Error });
-          stats.failed++;
-          logError('media_processing', 'item_failed', error, {
-            tweetId: item.tweetId,
-            mediaType: item.mediaType
-          });
-        } finally {
-          stats.completed++;
-          stats.inProgress--;
-          logStats();
-        }
-      })();
-      
-      inProgress.add(promise);
-      promise.then(() => inProgress.delete(promise));
+      results.push({ success: true });
+      stats.successful++;
+      log('media_processing', 'item_complete', {
+        tweetId: item.tweetId,
+        mediaType: item.mediaType,
+        localPath
+      });
+    } catch (error) {
+      results.push({ success: false, error: error as Error });
+      stats.failed++;
+      logError('media_processing', 'item_failed', error, {
+        tweetId: item.tweetId,
+        mediaType: item.mediaType
+      });
     }
 
-    // Wait for at least one promise to complete if we've hit the concurrency limit
-    if (inProgress.size >= concurrency) {
-      log('media_processing', 'waiting_for_slot', {
-        queueRemaining: queue.length,
-        inProgress: inProgress.size
-      });
-      await Promise.race(inProgress);
-    }
-  }
-
-  // Wait for any remaining downloads
-  if (inProgress.size > 0) {
-    log('media_processing', 'waiting_for_completion', {
-      remaining: inProgress.size
-    });
-    await Promise.all(inProgress);
+    stats.completed++;
+    logStats();
   }
 
   log('media_processing', 'complete', {

@@ -3,6 +3,14 @@ import { createTray } from './tray';
 import { initDatabase, searchTweets, getMediaForTweet } from './storage/db';
 import { createWindow } from './window';
 import fs from 'fs/promises';
+import { collectLikes } from './collection/collector';
+
+// Collection state
+let collectionState = {
+  isCollecting: false,
+  lastCollection: null as Date | null,
+  error: null as string | null
+};
 
 // Register IPC handlers
 function setupIPC() {
@@ -16,21 +24,41 @@ function setupIPC() {
   });
 
   ipcMain.handle('start-collection', async (event, mode) => {
-    // TODO: Implement collection status tracking
+    if (collectionState.isCollecting) {
+      throw new Error('Collection already in progress');
+    }
+
+    // Start collection in background
+    collectionState.isCollecting = true;
+    collectionState.error = null;
+
+    // Run collection in background
+    collectLikes(mode)
+      .then(() => {
+        collectionState.lastCollection = new Date();
+      })
+      .catch(error => {
+        console.error('Collection failed:', error);
+        collectionState.error = error.message;
+      })
+      .finally(() => {
+        collectionState.isCollecting = false;
+      });
+
+    // Return immediately to not block UI
     return true;
   });
 
   ipcMain.handle('stop-collection', async () => {
-    // TODO: Implement collection status tracking
+    collectionState.isCollecting = false;
     return true;
   });
 
   ipcMain.handle('get-stats', async () => {
-    // TODO: Implement stats
     return {
-      totalTweets: 0,
-      lastCollection: null,
-      isCollecting: false
+      isCollecting: collectionState.isCollecting,
+      lastCollection: collectionState.lastCollection,
+      error: collectionState.error
     };
   });
 

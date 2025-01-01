@@ -198,19 +198,72 @@ const Dashboard: React.FC = () => {
   const [tweets, setTweets] = useState<Tweet[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [stats, setStats] = useState<{
+    isCollecting: boolean;
+    lastCollection: string | null;
+    error: string | null;
+  }>({
+    isCollecting: false,
+    lastCollection: null,
+    error: null
+  });
+
+  // Poll for stats while collection is in progress
+  useEffect(() => {
+    let pollInterval: NodeJS.Timeout | null = null;
+
+    if (stats.isCollecting) {
+      pollInterval = setInterval(async () => {
+        try {
+          const newStats = await window.api.getStats();
+          setStats(newStats);
+          
+          // If collection just finished, refresh tweets
+          if (stats.isCollecting && !newStats.isCollecting) {
+            loadTweets();
+          }
+        } catch (error) {
+          console.error('Failed to get stats:', error);
+        }
+      }, 1000);
+    }
+
+    return () => {
+      if (pollInterval) {
+        clearInterval(pollInterval);
+      }
+    };
+  }, [stats.isCollecting]);
+
+  // Load initial stats
+  useEffect(() => {
+    window.api.getStats().then(setStats).catch(console.error);
+  }, []);
+
+  const loadTweets = async () => {
+    try {
+      setIsLoading(true);
+      const results = await window.api.getTweets({ query: '', filters: {} });
+      setTweets(results);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load tweets');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   useEffect(() => {
     loadTweets();
   }, []);
 
-  const loadTweets = async () => {
+  const startCollection = async (mode: 'incremental' | 'historical') => {
     try {
-      const results = await window.api.getTweets({ query: '', filters: {} });
-      setTweets(results);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load tweets');
-    } finally {
-      setIsLoading(false);
+      await window.api.startCollection(mode);
+      const newStats = await window.api.getStats();
+      setStats(newStats);
+    } catch (error) {
+      console.error('Failed to start collection:', error);
     }
   };
 
@@ -227,48 +280,48 @@ const Dashboard: React.FC = () => {
         <div className="bg-white p-6 rounded-lg shadow-sm">
           <h3 className="text-lg font-semibold mb-2">Last Collection</h3>
           <p className="text-2xl">
-            {tweets.length > 0 
-              ? formatTimestamp(new Date(tweets[0].liked_at))
+            {stats.lastCollection 
+              ? formatTimestamp(new Date(stats.lastCollection))
               : 'Never'}
           </p>
         </div>
         <div className="bg-white p-6 rounded-lg shadow-sm">
           <h3 className="text-lg font-semibold mb-2">Collection Status</h3>
-          <p className="text-2xl">Idle</p>
+          <p className="text-2xl">
+            {stats.isCollecting ? (
+              <span className="text-blue-500">Collecting...</span>
+            ) : stats.error ? (
+              <span className="text-red-500">Error</span>
+            ) : (
+              <span>Idle</span>
+            )}
+          </p>
+          {stats.error && (
+            <p className="text-sm text-red-500 mt-2">{stats.error}</p>
+          )}
         </div>
       </div>
 
-      {/* Search Section */}
+      {/* Actions */}
       <div className="bg-white p-6 rounded-lg shadow-sm mb-8">
-        <div className="flex gap-4 mb-6">
-          <input
-            type="text"
-            placeholder="Search tweets..."
-            className="flex-1 p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-          />
-          <button className="bg-blue-500 text-white px-6 py-2 rounded-lg hover:bg-blue-600 transition-colors">
-            Search
+        <div className="flex gap-4">
+          <button
+            onClick={() => startCollection('incremental')}
+            disabled={stats.isCollecting}
+            className={`px-4 py-2 rounded-lg ${
+              stats.isCollecting
+                ? 'bg-gray-200 cursor-not-allowed'
+                : 'bg-blue-500 hover:bg-blue-600 text-white'
+            }`}
+          >
+            {stats.isCollecting ? 'Collecting...' : 'Start Collection'}
           </button>
-        </div>
-
-        {/* Filters */}
-        <div className="flex flex-wrap gap-4">
-          <select className="p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none">
-            <option value="">All Media Types</option>
-            <option value="image">Images</option>
-            <option value="video">Videos</option>
-            <option value="link">Links</option>
-          </select>
-          <input
-            type="date"
-            className="p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-            placeholder="From Date"
-          />
-          <input
-            type="date"
-            className="p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-            placeholder="To Date"
-          />
+          <button
+            onClick={loadTweets}
+            className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg"
+          >
+            Refresh
+          </button>
         </div>
       </div>
 
