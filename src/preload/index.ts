@@ -18,5 +18,8 @@ contextBridge.exposeInMainWorld('api', {
   },
   getStats: async () => {
     return await ipcRenderer.invoke('get-stats');
+  },
+  getMediaForTweet: async (tweetId: string) => {
+    return await ipcRenderer.invoke('get-media-for-tweet', tweetId);
   }
 });

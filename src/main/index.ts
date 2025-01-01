@@ -1,6 +1,6 @@
 import { app, ipcMain } from 'electron';
 import { createTray } from './tray';
-import { initDatabase, searchTweets } from './storage/db';
+import { initDatabase, searchTweets, getMediaForTweet } from './storage/db';
 import { createWindow } from './window';
 
 // Register IPC handlers
@@ -31,6 +31,15 @@ function setupIPC() {
       lastCollection: null,
       isCollecting: false
     };
+  });
+
+  ipcMain.handle('get-media-for-tweet', async (event, tweetId) => {
+    try {
+      return await getMediaForTweet(tweetId);
+    } catch (error) {
+      console.error('Error getting media for tweet:', error);
+      throw error;
+    }
   });
 }
 

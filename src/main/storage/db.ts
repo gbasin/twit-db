@@ -48,6 +48,18 @@ export async function getMediaTypeId(typeName: string): Promise<number> {
   return result?.id;
 }
 
+// Get media for a specific tweet
+export async function getMediaForTweet(tweetId: string) {
+  const db = await initDatabase();
+  return db.all(`
+    SELECT m.id, mt.name as mediaType, m.local_path as localPath, m.original_url as originalUrl
+    FROM media m
+    JOIN media_types mt ON m.media_type_id = mt.id
+    WHERE m.tweet_id = ?
+    ORDER BY m.downloaded_at ASC
+  `, [tweetId]);
+}
+
 // Insert media record
 export async function insertMedia(data: {
   tweetId: string;

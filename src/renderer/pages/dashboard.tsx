@@ -10,6 +10,13 @@ interface Tweet {
   html: string;
 }
 
+interface Media {
+  id: string;
+  mediaType: string;
+  localPath: string;
+  originalUrl: string;
+}
+
 function formatNumber(num: number): string {
   if (num >= 1000000) {
     return `${(num / 1000000).toFixed(1)}M`;
@@ -33,10 +40,28 @@ function formatTimestamp(date: Date): string {
 
 const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
   const [isExpanded, setIsExpanded] = useState(false);
+  const [media, setMedia] = useState<Media[]>([]);
+  const [isLoadingMedia, setIsLoadingMedia] = useState(false);
   const shouldTruncate = tweet.text_content.length > 280;
 
   // Parse author string -> displayName, handle
   const [displayName, handle] = tweet.author.split(/(@\w+)/).filter(Boolean);
+
+  useEffect(() => {
+    if (tweet.has_media) {
+      setIsLoadingMedia(true);
+      window.api.getMediaForTweet(tweet.id)
+        .then(mediaItems => {
+          setMedia(mediaItems);
+        })
+        .catch(error => {
+          console.error('Failed to load media:', error);
+        })
+        .finally(() => {
+          setIsLoadingMedia(false);
+        });
+    }
+  }, [tweet.id]);
 
   return (
     <div className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors shadow-sm">
@@ -67,13 +92,36 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
 
       {/* Media Preview */}
       {tweet.has_media && (
-        <div className="flex items-center justify-center mb-3">
-          {/* In real usage, you'd display actual images/videos from DB. Using placeholder here. */}
-          <img
-            src="assets/icon.png"
-            alt="Media"
-            className="max-h-40 object-cover rounded"
-          />
+        <div className="mb-3">
+          {isLoadingMedia ? (
+            <div className="flex items-center justify-center h-40 bg-gray-100 rounded animate-pulse">
+              <span className="text-gray-500">Loading media...</span>
+            </div>
+          ) : media.length > 0 ? (
+            <div className={`grid gap-2 ${media.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>
+              {media.map(item => (
+                <div key={item.id} className="relative aspect-video">
+                  {item.mediaType === 'video' || item.mediaType === 'gif' ? (
+                    <video
+                      src={`file://${item.localPath}`}
+                      controls={item.mediaType === 'video'}
+                      autoPlay={item.mediaType === 'gif'}
+                      loop={item.mediaType === 'gif'}
+                      muted={item.mediaType === 'gif'}
+                      className="w-full h-full object-cover rounded"
+                    />
+                  ) : (
+                    <img
+                      src={`file://${item.localPath}`}
+                      alt="Tweet media"
+                      className="w-full h-full object-cover rounded"
+                      loading="lazy"
+                    />
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
       )}
 

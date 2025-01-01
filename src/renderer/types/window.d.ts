@@ -6,5 +6,11 @@ interface Window {
     getSettings: () => Promise<any>;
     updateSettings: (settings: any) => Promise<void>;
     getStats: () => Promise<any>;
+    getMediaForTweet: (tweetId: string) => Promise<Array<{
+      id: string;
+      mediaType: string;
+      localPath: string;
+      originalUrl: string;
+    }>>;
   }
 } 

@@ -9,6 +9,35 @@ import { execSync } from 'child_process';
 let isCollecting = false;
 let currentBrowserContext: any = null;
 
+// Structured logging helper
+function log(category: string, action: string, details?: any) {
+  const timestamp = new Date().toISOString();
+  const message = {
+    timestamp,
+    category,
+    action,
+    details: details || {}
+  };
+  console.log(JSON.stringify(message));
+}
+
+// Error logging helper
+function logError(category: string, action: string, error: any, context?: any) {
+  const timestamp = new Date().toISOString();
+  const message = {
+    timestamp,
+    category,
+    action,
+    error: {
+      message: error.message,
+      stack: error.stack,
+      ...error
+    },
+    context
+  };
+  console.error(JSON.stringify(message));
+}
+
 // Get the app's browser profile directory
 function getAppProfileDir() {
   return path.join(app.getPath('userData'), 'browser-profile');
@@ -36,24 +65,213 @@ async function cleanupExistingSessions() {
 
 // Download and save media file
 async function downloadMedia(url: string, tweetId: string): Promise<string> {
+  const logContext = { url, tweetId };
   try {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`Failed to download: ${response.statusText}`);
+    log('media', 'download_start', logContext);
+
+    // For Twitter media URLs, ensure we get the highest quality
+    const finalUrl = url.includes('pbs.twimg.com/media') 
+      ? `${url}?format=jpg&name=4096x4096` // Get highest quality for images
+      : url;
+
+    log('media', 'fetch_start', { ...logContext, finalUrl });
+    const response = await fetch(finalUrl);
+    
+    if (!response.ok) {
+      throw new Error(`Failed to download: ${response.statusText} (${response.status})`);
+    }
+    log('media', 'fetch_complete', { 
+      ...logContext, 
+      status: response.status,
+      contentType: response.headers.get('content-type'),
+      contentLength: response.headers.get('content-length')
+    });
     
     const contentType = response.headers.get('content-type') || '';
-    const ext = contentType.includes('image/') ? '.jpg' : '.mp4';  // Simplified extension logic
+    let ext = '.jpg'; // Default to jpg
+    
+    // Determine file extension based on content type
+    if (contentType.includes('video/')) {
+      ext = '.mp4';
+    } else if (contentType.includes('image/gif')) {
+      ext = '.gif';
+    } else if (contentType.includes('image/png')) {
+      ext = '.png';
+    } else if (contentType.includes('image/webp')) {
+      ext = '.webp';
+    }
     
     const filename = `${tweetId}_${crypto.createHash('md5').update(url).digest('hex').slice(0, 8)}${ext}`;
     const localPath = path.join(DIRS.media, filename);
     
+    log('media', 'saving_file', { ...logContext, filename, localPath, contentType });
     const buffer = await response.arrayBuffer();
     await fs.writeFile(localPath, Buffer.from(buffer));
     
+    log('media', 'download_complete', { 
+      ...logContext, 
+      filename, 
+      localPath, 
+      sizeBytes: buffer.byteLength 
+    });
     return localPath;
   } catch (error) {
-    console.error(`Failed to download media from ${url}:`, error);
+    logError('media', 'download_failed', error, logContext);
     throw error;
   }
+}
+
+// Process media items with concurrency control
+async function processMediaItems(mediaItems: Array<{
+  tweetId: string;
+  url: string;
+  mediaType: string;
+}>, concurrency = 5) {
+  log('media_processing', 'start', { 
+    totalItems: mediaItems.length,
+    concurrency 
+  });
+
+  const queue = [...mediaItems];
+  const inProgress = new Set<Promise<void>>();
+  const results: Array<{ success: boolean; error?: Error }> = [];
+  const stats = {
+    total: mediaItems.length,
+    completed: 0,
+    successful: 0,
+    failed: 0,
+    inProgress: 0
+  };
+
+  const logStats = () => {
+    log('media_processing', 'stats', stats);
+  };
+
+  while (queue.length > 0 || inProgress.size > 0) {
+    // Fill up the concurrent slots
+    while (queue.length > 0 && inProgress.size < concurrency) {
+      const item = queue.shift()!;
+      stats.inProgress++;
+      
+      log('media_processing', 'item_start', {
+        tweetId: item.tweetId,
+        mediaType: item.mediaType,
+        queueRemaining: queue.length,
+        inProgress: inProgress.size
+      });
+
+      const promise = (async () => {
+        try {
+          const localPath = await downloadMedia(item.url, item.tweetId);
+          await insertMedia({
+            tweetId: item.tweetId,
+            mediaType: item.mediaType,
+            originalUrl: item.url,
+            localPath,
+          });
+          results.push({ success: true });
+          stats.successful++;
+          log('media_processing', 'item_complete', {
+            tweetId: item.tweetId,
+            mediaType: item.mediaType,
+            localPath
+          });
+        } catch (error) {
+          results.push({ success: false, error: error as Error });
+          stats.failed++;
+          logError('media_processing', 'item_failed', error, {
+            tweetId: item.tweetId,
+            mediaType: item.mediaType
+          });
+        } finally {
+          stats.completed++;
+          stats.inProgress--;
+          logStats();
+        }
+      })();
+      
+      inProgress.add(promise);
+      promise.then(() => inProgress.delete(promise));
+    }
+
+    // Wait for at least one promise to complete if we've hit the concurrency limit
+    if (inProgress.size >= concurrency) {
+      log('media_processing', 'waiting_for_slot', {
+        queueRemaining: queue.length,
+        inProgress: inProgress.size
+      });
+      await Promise.race(inProgress);
+    }
+  }
+
+  // Wait for any remaining downloads
+  if (inProgress.size > 0) {
+    log('media_processing', 'waiting_for_completion', {
+      remaining: inProgress.size
+    });
+    await Promise.all(inProgress);
+  }
+
+  log('media_processing', 'complete', {
+    total: stats.total,
+    successful: stats.successful,
+    failed: stats.failed
+  });
+
+  return results;
+}
+
+// Extract media URLs from a tweet element
+function extractMediaUrls(article: Element): { 
+  images: { url: string }[],
+  videos: { url: string }[],
+  gifs: { url: string }[]
+} {
+  const results = {
+    images: [] as { url: string }[],
+    videos: [] as { url: string }[],
+    gifs: [] as { url: string }[]
+  };
+
+  try {
+    // Images: Look for high-res image URLs
+    results.images = Array.from(article.querySelectorAll('img[src*="pbs.twimg.com/media"]'))
+      .map(img => {
+        const src = (img as HTMLImageElement).src;
+        // Remove any existing format parameters
+        const baseUrl = src.split('?')[0];
+        return { url: baseUrl };
+      });
+
+    // Videos: Look for both video elements and video containers
+    results.videos = Array.from(article.querySelectorAll('video[src*="video.twimg.com"], div[data-testid="videoPlayer"]'))
+      .map(video => {
+        if (video instanceof HTMLVideoElement) {
+          return { url: video.src };
+        } else {
+          // For video players, try to find the source URL
+          const source = video.querySelector('source');
+          return { url: source?.src || '' };
+        }
+      })
+      .filter(v => v.url); // Remove any empty URLs
+
+    // GIFs: Look specifically for Twitter GIFs
+    results.gifs = Array.from(article.querySelectorAll('video[poster*="tweet_video_thumb"]'))
+      .map(gif => ({
+        url: (gif as HTMLVideoElement).src
+      }));
+
+    log('media_extraction', 'found_media', {
+      images: results.images.length,
+      videos: results.videos.length,
+      gifs: results.gifs.length
+    });
+  } catch (error) {
+    logError('media_extraction', 'extraction_failed', error);
+  }
+
+  return results;
 }
 
 export async function collectLikes(mode: 'incremental' | 'historical') {
@@ -271,17 +489,9 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
           author = `${displayName} ${handle}`.trim();
         }
         
-        // Check for media
-        const images = Array.from(el.querySelectorAll('img[src*="pbs.twimg.com/media"]')).map(img => ({
-          url: (img as HTMLImageElement).src
-        }));
-        const videos = Array.from(el.querySelectorAll('video')).map(video => ({
-          url: (video as HTMLVideoElement).src
-        }));
-        const gifs = Array.from(el.querySelectorAll('video[poster*="tweet_video_thumb"]')).map(gif => ({
-          url: (gif as HTMLVideoElement).src
-        }));
-
+        // Extract media elements
+        const mediaElements = extractMediaUrls(el);
+        
         // Check for cards (rich media previews)
         const card = el.querySelector('[data-testid="card.wrapper"]');
         const cardData = card ? {
@@ -309,77 +519,54 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
           liked_at: new Date().toISOString(),
           first_seen_at: new Date().toISOString(),
           is_quote_tweet: !!quotedTweet,
-          has_media: !!(images.length || videos.length || gifs.length),
+          has_media: !!(mediaElements.images.length || mediaElements.videos.length || mediaElements.gifs.length),
           has_links: !!el.querySelector('a[href*="//"]'),
           is_deleted: false,
           card_type: cardData?.type || null,
           card_data: cardData ? JSON.stringify(cardData) : null,
-          _media: {
-            images: images,
-            videos: videos,
-            gifs: gifs
-          }
+          _media: mediaElements
         };
       });
     });
 
-    // Insert into DB
+    // Insert into DB and process media
     console.log(`Found ${tweets.length} tweets, saving to database...`);
-    let savedCount = 0;
+    
+    // First, insert all tweets
     for (const tweet of tweets) {
       if (tweet.id) {
-        // First insert the tweet
         await insertTweet(tweet);
-        savedCount++;
-        
-        if (tweet._media) {
-          console.log(`Processing media for tweet ${tweet.id}...`);
-          // Handle images
-          for (const image of tweet._media.images) {
-            try {
-              const localPath = await downloadMedia(image.url, tweet.id);
-              await insertMedia({
-                tweetId: tweet.id,
-                mediaType: 'image',
-                originalUrl: image.url,
-                localPath,
-              });
-            } catch (error) {
-              console.error(`Failed to process image for tweet ${tweet.id}:`, error);
-            }
-          }
-
-          // Handle videos
-          for (const video of tweet._media.videos) {
-            try {
-              const localPath = await downloadMedia(video.url, tweet.id);
-              await insertMedia({
-                tweetId: tweet.id,
-                mediaType: 'video',
-                originalUrl: video.url,
-                localPath,
-              });
-            } catch (error) {
-              console.error(`Failed to process video for tweet ${tweet.id}:`, error);
-            }
-          }
-
-          // Handle GIFs
-          for (const gif of tweet._media.gifs) {
-            try {
-              const localPath = await downloadMedia(gif.url, tweet.id);
-              await insertMedia({
-                tweetId: tweet.id,
-                mediaType: 'gif',
-                originalUrl: gif.url,
-                localPath,
-              });
-            } catch (error) {
-              console.error(`Failed to process GIF for tweet ${tweet.id}:`, error);
-            }
-          }
-        }
       }
+    }
+
+    // Then, collect all media items to process in parallel
+    const mediaItems: Array<{ tweetId: string; url: string; mediaType: string }> = [];
+    
+    for (const tweet of tweets) {
+      if (tweet.id && tweet._media) {
+        // Collect images
+        tweet._media.images.forEach((image: { url: string }) => {
+          mediaItems.push({ tweetId: tweet.id, url: image.url, mediaType: 'image' });
+        });
+
+        // Collect videos
+        tweet._media.videos.forEach((video: { url: string }) => {
+          mediaItems.push({ tweetId: tweet.id, url: video.url, mediaType: 'video' });
+        });
+
+        // Collect GIFs
+        tweet._media.gifs.forEach((gif: { url: string }) => {
+          mediaItems.push({ tweetId: tweet.id, url: gif.url, mediaType: 'gif' });
+        });
+      }
+    }
+
+    // Process all media items in parallel with concurrency control
+    if (mediaItems.length > 0) {
+      console.log(`Processing ${mediaItems.length} media items...`);
+      const results = await processMediaItems(mediaItems);
+      const successCount = results.filter(r => r.success).length;
+      console.log(`Successfully processed ${successCount}/${mediaItems.length} media items`);
     }
 
     console.log(`Finished ${mode} collection. Collected ${tweets.length} tweets.`);
