@@ -90,15 +90,20 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
     <div className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors shadow-sm">
       {/* Author */}
       <div className="flex items-center gap-2 mb-2">
-        <div className="font-bold text-gray-900">{displayName}</div>
-        {handle && <div className="text-gray-500">{handle}</div>}
+        <div className="font-bold text-gray-900" title="Display Name">{displayName}</div>
+        {handle && <div className="text-gray-500" title="Twitter Handle">{handle}</div>}
         <span className="text-gray-500">·</span>
-        <div className="text-gray-500">{formatTimestamp(new Date(tweet.liked_at))}</div>
+        <div className="text-gray-500" title="When you liked this tweet">
+          {formatTimestamp(new Date(tweet.liked_at))}
+        </div>
       </div>
 
       {/* Tweet Content */}
       <div className="mb-3">
-        <div className={`${!isExpanded && shouldTruncate ? 'line-clamp-4' : ''} text-gray-800`}>
+        <div 
+          className={`${!isExpanded && shouldTruncate ? 'line-clamp-4' : ''} text-gray-800`}
+          title={shouldTruncate && !isExpanded ? "Click 'Show more' to see full text" : undefined}
+        >
           {tweet.text_content.split('\n\n').map((block, i) => (
             <p key={i} className="mb-2 last:mb-0">{block}</p>
           ))}
@@ -107,6 +112,7 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
           <button
             onClick={() => setIsExpanded(!isExpanded)}
             className="text-blue-600 hover:text-blue-700 text-sm"
+            title={isExpanded ? "Collapse tweet text" : "Show full tweet text"}
           >
             {isExpanded ? 'Show less' : 'Show more'}
           </button>
@@ -121,9 +127,27 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
               <span className="text-gray-500">Loading media...</span>
             </div>
           ) : media.length > 0 ? (
-            <div className={`grid gap-2 ${media.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>
-              {media.map(item => (
-                <div key={item.id} className="relative aspect-video">
+            <div className={`grid gap-2 ${
+              media.length === 1 ? 'grid-cols-1' : 
+              media.length === 2 ? 'grid-cols-2' :
+              media.length === 3 ? 'grid-cols-2' :
+              'grid-cols-2'
+            }`}>
+              {media.map((item, index) => (
+                <div 
+                  key={item.id} 
+                  className={`relative ${
+                    // For 3 items, make the first one full width
+                    media.length === 3 && index === 0 ? 'col-span-2' : ''
+                  } ${
+                    // Adjust aspect ratio based on media type and count
+                    media.length === 1 ? 'aspect-video' :
+                    media.length === 2 ? 'aspect-square' :
+                    media.length === 3 && index === 0 ? 'aspect-[2/1]' :
+                    'aspect-square'
+                  }`}
+                  title={`${item.mediaType} from tweet`}
+                >
                   {mediaData[item.id] ? (
                     item.mediaType === 'video' || item.mediaType === 'gif' ? (
                       <video
@@ -133,13 +157,16 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
                         loop={item.mediaType === 'gif'}
                         muted={item.mediaType === 'gif'}
                         className="w-full h-full object-cover rounded"
+                        title={item.mediaType === 'video' ? 'Click to play video' : 'Animated GIF'}
                       />
                     ) : (
                       <img
                         src={mediaData[item.id]}
                         alt="Tweet media"
-                        className="w-full h-full object-cover rounded"
+                        className="w-full h-full object-cover rounded hover:opacity-90 transition-opacity cursor-zoom-in"
                         loading="lazy"
+                        title="Click to view full size"
+                        onClick={() => window.open(item.originalUrl, '_blank')}
                       />
                     )
                   ) : (
@@ -158,7 +185,7 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
       <div className="flex items-center justify-between text-sm text-gray-500">
         <div className="flex items-center gap-4">
           {tweet.has_media && (
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1" title="This tweet contains media attachments">
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path
                   strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -170,7 +197,7 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
             </div>
           )}
           {tweet.has_links && (
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1" title="This tweet contains external links">
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path
                   strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -186,6 +213,7 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
         <button 
           onClick={() => window.open(`https://twitter.com/i/status/${tweet.id}`, '_blank')}
           className="text-blue-600 hover:text-blue-700"
+          title="Open original tweet on Twitter"
         >
           View on Twitter
         </button>

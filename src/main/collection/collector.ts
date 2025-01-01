@@ -1,5 +1,5 @@
 import { chromium } from 'playwright';
-import { insertTweet, insertMedia, DIRS } from '../storage/db';
+import { insertTweet, insertMedia, DIRS, mediaExists, tweetExists } from '../storage/db';
 import path from 'path';
 import { app } from 'electron';
 import fs from 'fs/promises';
@@ -134,7 +134,8 @@ async function processMediaItems(mediaItems: Array<{
     total: mediaItems.length,
     completed: 0,
     successful: 0,
-    failed: 0
+    failed: 0,
+    skipped: 0
   };
 
   const logStats = () => {
@@ -150,6 +151,20 @@ async function processMediaItems(mediaItems: Array<{
     });
 
     try {
+      // Check if media already exists
+      const exists = await mediaExists(item.tweetId, item.url);
+      if (exists) {
+        log('media_processing', 'item_skipped', {
+          tweetId: item.tweetId,
+          mediaType: item.mediaType,
+          reason: 'already_exists'
+        });
+        results.push({ success: true });
+        stats.skipped++;
+        stats.completed++;
+        continue;
+      }
+
       const localPath = await downloadMedia(item.url, item.tweetId);
       await insertMedia({
         tweetId: item.tweetId,
@@ -180,7 +195,8 @@ async function processMediaItems(mediaItems: Array<{
   log('media_processing', 'complete', {
     total: stats.total,
     successful: stats.successful,
-    failed: stats.failed
+    failed: stats.failed,
+    skipped: stats.skipped
   });
 
   return results;
@@ -502,15 +518,23 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
     // Insert into DB and process media
     log('collection', 'db_insert_start', { tweetCount: tweets.length });
     
-    // First, insert all tweets
+    // First, insert all tweets and track which ones are new
     let insertedCount = 0;
+    const newTweetIds = new Set<string>();
+    
     for (const tweet of tweets) {
       if (tweet.id) {
         try {
-          await insertTweet(tweet);
-          insertedCount++;
-          log('collection', 'tweet_inserted', { 
+          // Check if tweet already exists
+          const exists = await tweetExists(tweet.id);
+          if (!exists) {
+            await insertTweet(tweet);
+            newTweetIds.add(tweet.id);
+            insertedCount++;
+          }
+          log('collection', 'tweet_processed', { 
             tweetId: tweet.id, 
+            isNew: !exists,
             hasMedia: tweet.has_media,
             mediaCount: tweet._media ? (
               tweet._media.images.length + 
@@ -519,7 +543,7 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
             ) : 0
           });
         } catch (error) {
-          logError('collection', 'tweet_insert_failed', error, { tweetId: tweet.id });
+          logError('collection', 'tweet_process_failed', error, { tweetId: tweet.id });
         }
       }
     }
@@ -529,11 +553,11 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
       inserted: insertedCount
     });
 
-    // Then, collect all media items to process in parallel
+    // Then, collect media items only for new tweets
     const mediaItems: Array<{ tweetId: string; url: string; mediaType: string }> = [];
     
     for (const tweet of tweets) {
-      if (tweet.id && tweet._media) {
+      if (tweet.id && tweet._media && newTweetIds.has(tweet.id)) {
         // Collect images
         tweet._media.images.forEach((image: { url: string }) => {
           mediaItems.push({ tweetId: tweet.id, url: image.url, mediaType: 'image' });

@@ -267,3 +267,20 @@ export async function initDatabase() {
     throw error;
   }
 }
+
+// Check if media already exists
+export async function mediaExists(tweetId: string, originalUrl: string): Promise<boolean> {
+  const db = await initDatabase();
+  const result = await db.get(
+    'SELECT id FROM media WHERE tweet_id = ? AND original_url = ?',
+    [tweetId, originalUrl]
+  );
+  return !!result;
+}
+
+// Check if tweet exists
+export async function tweetExists(tweetId: string): Promise<boolean> {
+  const db = await initDatabase();
+  const result = await db.get('SELECT id FROM tweets WHERE id = ?', [tweetId]);
+  return !!result;
+}
