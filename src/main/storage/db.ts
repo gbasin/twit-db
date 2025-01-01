@@ -128,14 +128,15 @@ export async function insertTweet(tweet: any) {
     
     // Insert links if present
     if (tweet.links && tweet.links.length > 0) {
-      for (const url of tweet.links) {
+      for (const link of tweet.links) {
         await db.run(
-          `INSERT INTO links (id, tweet_id, url, created_at)
-           VALUES (?, ?, ?, ?)`,
+          `INSERT INTO links (id, tweet_id, original_url, resolved_url, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
           [
             crypto.randomUUID(),
             tweet.id,
-            url,
+            link.originalUrl,
+            link.resolvedUrl,
             new Date().toISOString()
           ]
         );
@@ -195,7 +196,9 @@ export async function searchTweets(query: string, filters: SearchFilters = {}) {
     : '';
 
   const results = await db.all(`
-    SELECT t.*, GROUP_CONCAT(l.url) as link_urls
+    SELECT t.*, 
+      GROUP_CONCAT(l.original_url) as original_urls,
+      GROUP_CONCAT(l.resolved_url) as resolved_urls
     FROM tweets t
     LEFT JOIN links l ON t.id = l.tweet_id
     ${whereClause}
@@ -208,7 +211,10 @@ export async function searchTweets(query: string, filters: SearchFilters = {}) {
   return results.map((tweet: any) => ({
     ...tweet,
     metrics: tweet.metrics ? JSON.parse(tweet.metrics) : null,
-    links: tweet.link_urls ? tweet.link_urls.split(',') : [],
+    links: tweet.original_urls ? tweet.original_urls.split(',').map((originalUrl: string, index: number) => ({
+      originalUrl,
+      resolvedUrl: tweet.resolved_urls.split(',')[index]
+    })) : [],
     is_quote_tweet: !!tweet.is_quote_tweet,
     has_media: !!tweet.has_media,
     has_links: !!tweet.has_links,
@@ -281,7 +287,8 @@ export async function initDatabase() {
       CREATE TABLE IF NOT EXISTS links (
         id TEXT PRIMARY KEY,
         tweet_id TEXT NOT NULL,
-        url TEXT NOT NULL,
+        original_url TEXT NOT NULL,
+        resolved_url TEXT NOT NULL,
         created_at TIMESTAMP NOT NULL,
         FOREIGN KEY(tweet_id) REFERENCES tweets(id)
       );

@@ -16,7 +16,10 @@ interface Tweet {
     likes: string;
     views: string;
   };
-  links: string[];
+  links: Array<{
+    originalUrl: string;
+    resolvedUrl: string;
+  }>;
 }
 
 interface Media {
@@ -169,17 +172,23 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
       {/* Links Section */}
       {tweet.links && tweet.links.length > 0 && (
         <div className="mb-3">
-          <div className="flex flex-col gap-1">
+          <div className="flex flex-col gap-2">
             {tweet.links.map((link, index) => (
-              <a
-                key={index}
-                href={link}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-blue-600 hover:text-blue-700 truncate"
-              >
-                {link}
-              </a>
+              <div key={index} className="text-sm">
+                <a
+                  href={link.resolvedUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-600 hover:text-blue-700 block truncate"
+                >
+                  {link.resolvedUrl}
+                </a>
+                {link.originalUrl !== link.resolvedUrl && (
+                  <div className="text-gray-500 text-xs truncate">
+                    Short URL: {link.originalUrl}
+                  </div>
+                )}
+              </div>
             ))}
           </div>
         </div>

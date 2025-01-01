@@ -202,6 +202,17 @@ async function processMediaItems(mediaItems: Array<{
   return results;
 }
 
+// Helper function to resolve shortened URLs
+async function resolveUrl(url: string): Promise<string> {
+  try {
+    const response = await fetch(url, { method: 'HEAD', redirect: 'follow' });
+    return response.url;
+  } catch (error) {
+    console.error(`Failed to resolve URL ${url}:`, error);
+    return url; // Return original URL if resolution fails
+  }
+}
+
 export async function collectLikes(mode: 'incremental' | 'historical') {
   if (isCollecting) {
     console.log("Collection is already in progress.");
@@ -422,7 +433,7 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
     console.log('Extracting tweets from page...');
     // Extracting tweets from page...
     log('collection', 'extraction_start', { mode });
-    const tweets = await page.$$eval('article', (articles: Element[]) => {
+    const tweets = await page.$$eval('article', async (articles: Element[]) => {
       // Define extractMediaUrls in browser context
       function extractMediaUrls(article: Element) {
         const results = {
@@ -468,7 +479,7 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
       }
 
       // Return the raw data we need for logging
-      return articles.map((el: Element) => {
+      return await Promise.all(articles.map(async (el: Element) => {
         const tweetId = el.querySelector('a[href*="/status/"]')?.getAttribute('href')?.split('/status/')[1] || '';
         
         // Get the main tweet text content - look for all text content divs
@@ -547,8 +558,22 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
             }))
           }
         };
-      });
+      }));
     });
+
+    // After extracting tweets, resolve URLs
+    for (const tweet of tweets) {
+      if (tweet.links && tweet.links.length > 0) {
+        // Resolve URLs for each link
+        const resolvedLinks = await Promise.all(
+          tweet.links.map(async (link: string) => ({
+            originalUrl: link,
+            resolvedUrl: await resolveUrl(link)
+          }))
+        );
+        tweet.links = resolvedLinks;
+      }
+    }
 
     // Log the raw tweet data for debugging
     for (const tweet of tweets) {
