@@ -28,14 +28,14 @@ function formatNumber(num: number): string {
 }
 
 function formatTimestamp(date: Date): string {
-  const now = new Date();
-  const diff = now.getTime() - date.getTime();
-  const hours = Math.floor(diff / (1000 * 60 * 60));
-
-  if (hours < 24) {
-    return `${hours}h`;
-  }
-  return date.toLocaleDateString();
+  return date.toLocaleString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  });
 }
 
 const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
@@ -156,18 +156,51 @@ const TweetCard: React.FC<{ tweet: Tweet }> = ({ tweet }) => {
                         autoPlay={item.mediaType === 'gif'}
                         loop={item.mediaType === 'gif'}
                         muted={item.mediaType === 'gif'}
-                        className="w-full h-full object-cover rounded"
+                        className="w-full h-full object-contain bg-black rounded"
                         title={item.mediaType === 'video' ? 'Click to play video' : 'Animated GIF'}
                       />
                     ) : (
-                      <img
-                        src={mediaData[item.id]}
-                        alt="Tweet media"
-                        className="w-full h-full object-cover rounded hover:opacity-90 transition-opacity cursor-zoom-in"
-                        loading="lazy"
-                        title="Click to view full size"
-                        onClick={() => window.open(item.originalUrl, '_blank')}
-                      />
+                      <div className="w-full h-full flex items-center justify-center bg-black rounded overflow-hidden">
+                        <img
+                          src={mediaData[item.id]}
+                          alt="Tweet media"
+                          className="max-w-full max-h-full object-contain hover:opacity-90 transition-opacity cursor-zoom-in"
+                          loading="lazy"
+                          title="Click to view full size"
+                          onClick={() => {
+                            // Open the media data URL directly in a new window
+                            const win = window.open('', '_blank');
+                            if (win) {
+                              win.document.write(`
+                                <html>
+                                  <head>
+                                    <title>Media View</title>
+                                    <style>
+                                      body {
+                                        margin: 0;
+                                        padding: 0;
+                                        display: flex;
+                                        justify-content: center;
+                                        align-items: center;
+                                        min-height: 100vh;
+                                        background: #000;
+                                      }
+                                      img {
+                                        max-width: 100%;
+                                        max-height: 100vh;
+                                        object-fit: contain;
+                                      }
+                                    </style>
+                                  </head>
+                                  <body>
+                                    <img src="${mediaData[item.id]}" alt="Full size media" />
+                                  </body>
+                                </html>
+                              `);
+                            }
+                          }}
+                        />
+                      </div>
                     )
                   ) : (
                     <div className="w-full h-full bg-gray-100 rounded flex items-center justify-center">

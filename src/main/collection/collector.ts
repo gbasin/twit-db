@@ -379,21 +379,44 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
     let previousHeight = 0;
     let newHeight = -1;
     let scrollCount = mode === 'historical' ? 20 : 5; // Increase if you want more data
+    let noNewContentCount = 0;
+    const maxNoNewContentAttempts = 3;
     
     console.log(`Starting to scroll page (${scrollCount} times)...`);
     for (let i = 0; i < scrollCount; i++) {
       console.log(`Scroll ${i + 1}/${scrollCount}`);
+      
+      // Scroll and wait for new content
       await page.evaluate(() => {
-        window.scrollBy(0, window.innerHeight);
+        window.scrollBy(0, window.innerHeight * 2);
       });
-      // Wait a bit for content to load
-      await page.waitForTimeout(2000);
+      
+      // Wait longer for content to load
+      await page.waitForTimeout(3000);
+      
+      // Check for new tweets
+      const tweetCount = await page.$$eval('article', (articles: Element[]) => articles.length);
+      console.log(`Found ${tweetCount} tweets after scroll`);
+      
+      // Get new height
       newHeight = await page.evaluate(() => document.body.scrollHeight);
+      
       if (newHeight === previousHeight) {
-        console.log('No new content after scroll, stopping...');
-        break;
+        noNewContentCount++;
+        console.log(`No new content detected (attempt ${noNewContentCount}/${maxNoNewContentAttempts})`);
+        if (noNewContentCount >= maxNoNewContentAttempts) {
+          console.log('No new content after multiple attempts, stopping...');
+          break;
+        }
+      } else {
+        noNewContentCount = 0;
+        previousHeight = newHeight;
       }
-      previousHeight = newHeight;
+      
+      // Wait for any new tweets to load
+      await page.waitForSelector('article', { timeout: 5000 }).catch(() => {
+        console.log('No new articles found after timeout');
+      });
     }
 
     console.log('Extracting tweets from page...');
@@ -450,9 +473,12 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
         const tweetId = el.querySelector('a[href*="/status/"]')?.getAttribute('href')?.split('/status/')[1] || '';
         console.log(`Processing tweet ${tweetId}`);
         
-        // Get the main tweet text content
-        const tweetTextEl = el.querySelector('[data-testid="tweetText"]');
-        const textContent = tweetTextEl ? tweetTextEl.textContent || '' : '';
+        // Get the main tweet text content - look for all text content divs
+        const tweetTextEls = el.querySelectorAll('[data-testid="tweetText"]');
+        const textContent = Array.from(tweetTextEls)
+          .map(el => el.textContent || '')
+          .join('\n\n')
+          .trim();
         
         // Get author info - look for the User-Name element
         const authorEl = el.querySelector('[data-testid="User-Name"]');
