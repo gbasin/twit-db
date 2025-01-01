@@ -519,7 +519,9 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
 
       // Use UTC milliseconds since epoch
       const now = Date.now();
-      return await Promise.all(articles.map(async (el: Element, index: number) => {
+      // Process articles in reverse order to maintain newest-first order
+      const reversedArticles = Array.from(articles).reverse();
+      return await Promise.all(reversedArticles.map(async (el: Element, index: number) => {
         const tweetUrl = el.querySelector('a[href*="/status/"]')?.getAttribute('href') || '';
         const tweetId = extractTweetId(tweetUrl) || '';
         
@@ -686,7 +688,9 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
           
           // Extract all tweets in the thread by the same author
           const threadTweets = await page.$$eval('article', (articles: Element[], authorHandle: string) => {
-            const results = articles
+            // Process articles in reverse order to maintain newest-first order
+            const reversedArticles = Array.from(articles).reverse();
+            const results = reversedArticles
               .map(article => {
                 const authorEl = article.querySelector('[data-testid="User-Name"]');
                 const authorSpans = authorEl ? Array.from(authorEl.querySelectorAll('span')) : [];
@@ -764,6 +768,8 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
     // Second pass: collect all identified thread tweets
     log('collection', 'thread_tweets_collection_start', { count: threadTweetsToCollect.size });
     
+    const collectedThreadTweets = new Set<string>();
+    
     for (const tweetId of threadTweetsToCollect) {
       if (!await tweetExists(tweetId)) {
         try {
@@ -778,7 +784,7 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
           await page.waitForSelector('article', { timeout: 10000 });
           
           // Extract tweet data
-          const threadTweetData = await page.$$eval('article', (articles: Element[], now: number) => {
+          const threadTweetData = await page.$$eval('article', (articles: Element[], args: { now: number; position: number }) => {
             const article = articles[0];  // We only need the first article for the specific tweet
             
             // Helper to extract tweet ID from URL
@@ -838,7 +844,7 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
               handle: handle,
               author: handle ? `${displayName} ${handle}` : displayName,
               created_at: tweetTimestamp,
-              like_order: now - threadTweetsToCollect.size,  // Decrement by thread position
+              like_order: args.now - args.position,  // Decrement by thread position
               is_quote_tweet: false,
               has_media: mediaElements.images.length > 0 || mediaElements.videos.length > 0 || mediaElements.gifs.length > 0,
               has_links: false,
@@ -854,11 +860,15 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
               },
               _media: mediaElements
             };
-          }, Date.now());
+          }, { 
+            now: Date.now(), 
+            position: Array.from(threadTweetsToCollect).indexOf(tweetId) + 1 
+          });
           
           // Insert thread tweet if it doesn't exist
           if (threadTweetData && !await tweetExists(threadTweetData.id)) {
             await insertTweet(threadTweetData);
+            collectedThreadTweets.add(threadTweetData.id);
             log('collection', 'thread_tweet_inserted', { tweetId: threadTweetData.id });
 
             // Process media for thread tweet
@@ -889,6 +899,8 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
         } catch (error) {
           logError('collection', 'thread_tweet_collection_failed', error, { tweetId });
         }
+      } else {
+        collectedThreadTweets.add(tweetId);
       }
     }
     
@@ -912,7 +924,9 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
           
           // Extract all tweets in the thread by the same author
           const threadTweets = await page.$$eval('article', (articles: Element[], authorHandle: string) => {
-            const results = articles
+            // Process articles in reverse order to maintain newest-first order
+            const reversedArticles = Array.from(articles).reverse();
+            const results = reversedArticles
               .map(article => {
                 const authorEl = article.querySelector('[data-testid="User-Name"]');
                 const authorSpans = authorEl ? Array.from(authorEl.querySelectorAll('span')) : [];
@@ -965,7 +979,7 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
             
             // First verify all tweets exist in the database
             const allTweetsExist = await Promise.all(
-              threadTweets.tweets.map(async (t: { id: string }) => await tweetExists(t.id))
+              threadTweets.tweets.map(async (t: { id: string }) => collectedThreadTweets.has(t.id) || await tweetExists(t.id))
             );
             
             if (allTweetsExist.every(exists => exists)) {
