@@ -384,28 +384,37 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
     await page.waitForSelector('nav[role="navigation"]', { timeout: 10000 });
     
     console.log('Waiting for content to load...');
-    // Wait for tweets to be visible
-    await page.waitForSelector('article', { timeout: 30000 }).catch(() => {
-      console.log('No articles found after timeout');
-    });
+    // Wait for tweets to be visible and ensure we have the initial view loaded
+    await page.waitForSelector('article', { timeout: 30000 });
+    
+    // Wait a bit longer to ensure all initial tweets are loaded
+    await page.waitForTimeout(5000);
     
     console.log('Page loaded, looking for tweets...');
     
-    // We'll do a simple approach:
-    // 1. Scroll a few times
-    // 2. Extract tweets
-    // 3. Insert them into DB
-    // For a real production approach, you'd incorporate random timings, thorough error handling, etc.
+    // Extract initial tweets before any scrolling
+    const initialTweets = await page.$$eval('article', (articles: Element[]) => {
+      return articles.map((article: Element) => {
+        const tweetUrl = article.querySelector('a[href*="/status/"]')?.getAttribute('href') || '';
+        const match = tweetUrl.match(/\/status\/(\d+)/);
+        return match ? match[1] : null;
+      }).filter(Boolean);
+    });
     
-    let previousHeight = 0;
-    let newHeight = -1;
-    let scrollCount = mode === 'historical' ? 20 : 5; // Increase if you want more data
+    console.log('Initial tweets found:', initialTweets);
+    
+    // Then continue with scrolling for more tweets...
+    
+    let previousTweetCount = 0;
     let noNewContentCount = 0;
     const maxNoNewContentAttempts = 3;
+    const maxScrolls = mode === 'historical' ? 50 : 5;
+    let scrollCount = 0;
     
-    console.log(`Starting to scroll page (${scrollCount} times)...`);
-    for (let i = 0; i < scrollCount; i++) {
-      console.log(`Scroll ${i + 1}/${scrollCount}`);
+    console.log(`Starting to scroll page (max ${maxScrolls} times)...`);
+    while (scrollCount < maxScrolls) {
+      scrollCount++;
+      console.log(`Scroll ${scrollCount}/${maxScrolls}`);
       
       // Scroll and wait for new content
       await page.evaluate(() => {
@@ -416,13 +425,22 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
       await page.waitForTimeout(3000);
       
       // Check for new tweets
-      const tweetCount = await page.$$eval('article', (articles: Element[]) => articles.length);
-      console.log(`Found ${tweetCount} tweets after scroll`);
+      const tweetCount = await page.$$eval('article', (articles: Element[]) => {
+        const tweetIds = articles.map(article => {
+          const tweetUrl = article.querySelector('a[href*="/status/"]')?.getAttribute('href') || '';
+          const match = tweetUrl.match(/\/status\/(\d+)/);
+          return match ? match[1] : null;
+        }).filter(Boolean);
+        return {
+          count: articles.length,
+          firstId: tweetIds[0],
+          lastId: tweetIds[tweetIds.length - 1]
+        };
+      });
+
+      console.log(`Found ${tweetCount.count} tweets after scroll (first: ${tweetCount.firstId}, last: ${tweetCount.lastId})`);
       
-      // Get new height
-      newHeight = await page.evaluate(() => document.body.scrollHeight);
-      
-      if (newHeight === previousHeight) {
+      if (tweetCount.count === previousTweetCount) {
         noNewContentCount++;
         console.log(`No new content detected (attempt ${noNewContentCount}/${maxNoNewContentAttempts})`);
         if (noNewContentCount >= maxNoNewContentAttempts) {
@@ -431,7 +449,7 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
         }
       } else {
         noNewContentCount = 0;
-        previousHeight = newHeight;
+        previousTweetCount = tweetCount.count;
       }
       
       // Wait for any new tweets to load
@@ -499,12 +517,8 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
         return match ? match[1] : null;
       }
 
-      const now = new Date();
-      // Since tweets are in reverse chronological order of likes,
-      // subtract a small increment for each one to maintain relative order
-      const MINUTES_BETWEEN_LIKES = 1;
-
-      // Return the raw data we need for logging
+      // Use UTC milliseconds since epoch
+      const now = Date.now();
       return await Promise.all(articles.map(async (el: Element, index: number) => {
         const tweetUrl = el.querySelector('a[href*="/status/"]')?.getAttribute('href') || '';
         const tweetId = extractTweetId(tweetUrl) || '';
@@ -522,6 +536,9 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
         const timestampEl = el.querySelector('time');
         const tweetTimestamp = timestampEl?.getAttribute('datetime') || new Date().toISOString();
 
+        // Use collection timestamp and decrement by index to maintain relative order
+        const like_order = now - index;  // Decrement by 1 for each tweet
+        
         // Check if this is a thread tweet
         const isThreadTweet = inReplyToId && el.querySelector(`a[href*="${inReplyToId}"]`);
         
@@ -583,7 +600,7 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
           handle: handle,
           author: handle ? `${displayName} ${handle}` : displayName,
           created_at: tweetTimestamp,  // When the tweet was posted
-          like_order: startOrder + index,  // Use offset from highest existing order
+          like_order: like_order,
           is_quote_tweet: !!quotedTweet,
           has_media: !!(mediaElements.images.length || mediaElements.videos.length || mediaElements.gifs.length),
           has_links: cleanLinks.length > 0,
@@ -606,163 +623,9 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
       }));
     }, startingLikeOrder);
 
-    // After extracting tweets, collect thread tweets
-    log('collection', 'thread_collection_start');
-    for (const tweet of tweets) {
-      if (tweet.conversation_id && tweet.author) {
-        log('thread_debug', 'checking_tweet', {
-          tweetId: tweet.id,
-          conversationId: tweet.conversation_id,
-          author: tweet.author,
-          inReplyToId: tweet.in_reply_to_id
-        });
-
-        try {
-          // Navigate to the conversation/thread view
-          const threadUrl = `https://twitter.com/i/status/${tweet.conversation_id}`;
-          log('thread_debug', 'loading_thread_page', { url: threadUrl });
-          
-          await page.goto(threadUrl, {
-            waitUntil: 'domcontentloaded',
-            timeout: 30000
-          });
-          
-          // Wait for tweets to load
-          await page.waitForSelector('article', { timeout: 10000 });
-          
-          // Extract all tweets in the thread by the same author
-          const threadTweets = await page.$$eval('article', (articles: Element[], originalAuthor: string) => {
-            const results = articles
-              .map(article => {
-                const authorEl = article.querySelector('[data-testid="User-Name"]');
-                const author = authorEl?.textContent || '';
-                const tweetId = article.querySelector('a[href*="/status/"]')?.getAttribute('href')?.split('/status/')[1] || '';
-                
-                return {
-                  id: tweetId,
-                  author,
-                  isOriginalAuthor: author.includes(originalAuthor),
-                  debug: {
-                    rawAuthorText: author,
-                    originalAuthor,
-                    authorMatch: author.includes(originalAuthor)
-                  }
-                };
-              })
-              .filter(t => t.isOriginalAuthor)
-              .map((t, index) => ({
-                id: t.id,
-                position: index + 1,
-                debug: t.debug
-              }));
-
-            return {
-              tweets: results,
-              debug: {
-                totalArticles: articles.length,
-                filteredCount: results.length
-              }
-            };
-          }, tweet.author);
-          
-          log('thread_debug', 'thread_extraction_result', {
-            originalTweetId: tweet.id,
-            ...threadTweets.debug,
-            tweets: threadTweets.tweets.map((t: ThreadTweet) => ({
-              id: t.id,
-              position: t.position,
-              debug: t.debug
-            }))
-          });
-
-          // If we found thread tweets, process them
-          if (threadTweets.tweets.length > 1) {
-            const threadId = threadTweets.tweets[0].id;
-            log('collection', 'thread_found', {
-              threadId,
-              tweetCount: threadTweets.tweets.length,
-              tweets: threadTweets.tweets.map((t: ThreadTweet) => ({
-                id: t.id,
-                position: t.position,
-                debug: t.debug
-              }))
-            });
-            
-            // Mark the first tweet as thread start and update length
-            await updateThreadMetadata(threadId, threadTweets.tweets.length);
-            log('thread_debug', 'thread_metadata_updated', {
-              threadId,
-              length: threadTweets.tweets.length
-            });
-            
-            // Insert thread relationships
-            for (const threadTweet of threadTweets.tweets) {
-              await insertThreadTweet(threadId, threadTweet.id, threadTweet.position);
-              log('thread_debug', 'thread_relationship_inserted', {
-                threadId,
-                tweetId: threadTweet.id,
-                position: threadTweet.position
-              });
-            }
-          } else {
-            log('thread_debug', 'no_thread_found', {
-              tweetId: tweet.id,
-              foundTweets: threadTweets.tweets.length
-            });
-          }
-        } catch (error) {
-          logError('collection', 'thread_collection_failed', error, {
-            tweetId: tweet.id,
-            conversationId: tweet.conversation_id
-          });
-        }
-      } else {
-        log('thread_debug', 'skipping_tweet', {
-          tweetId: tweet.id,
-          hasConversationId: !!tweet.conversation_id,
-          hasAuthor: !!tweet.author
-        });
-      }
-    }
-    log('collection', 'thread_collection_complete');
-
-    // After extracting tweets, resolve URLs
-    for (const tweet of tweets) {
-      if (tweet.links && tweet.links.length > 0) {
-        // Resolve URLs for each link
-        const resolvedLinks = await Promise.all(
-          tweet.links.map(async (link: string) => ({
-            originalUrl: link,
-            resolvedUrl: await resolveUrl(link)
-          }))
-        );
-        tweet.links = resolvedLinks;
-      }
-    }
-
-    // Log the raw tweet data for debugging
-    for (const tweet of tweets) {
-      log('tweet_debug', 'raw_content', {
-        id: tweet.id,
-        raw_text_elements: tweet.raw_text_elements,
-        test_id_elements: tweet.test_id_elements,
-        links: tweet._debug.links
-      });
-      // Remove debug data before inserting
-      delete tweet.raw_text_elements;
-      delete tweet.test_id_elements;
-      delete tweet._debug;
-    }
-
-    log('collection', 'extraction_complete', { 
-      tweetCount: tweets.length,
-      tweetsWithMedia: tweets.filter((t: { has_media: boolean }) => t.has_media).length
-    });
-
-    // Insert into DB and process media
+    // First, insert all tweets into DB
     log('collection', 'db_insert_start', { tweetCount: tweets.length });
     
-    // First, insert all tweets and track which ones are new
     let insertedCount = 0;
     const newTweetIds = new Set<string>();
     
@@ -797,7 +660,354 @@ export async function collectLikes(mode: 'incremental' | 'historical') {
       inserted: insertedCount
     });
 
-    // Then, collect media items only for new tweets
+    // After tweets are inserted, collect thread tweets
+    log('collection', 'thread_collection_start');
+    
+    // First, collect all thread tweets
+    const threadTweetsToCollect = new Set<string>();
+    
+    // First pass: identify all thread tweets that need to be collected
+    for (const tweet of tweets) {
+      if (tweet.conversation_id && tweet.author) {
+        const authorHandle = tweet.author.split(' ').pop()?.trim() || '';
+        
+        try {
+          // Navigate to the conversation/thread view
+          const threadUrl = `https://twitter.com/i/status/${tweet.conversation_id}`;
+          log('thread_debug', 'loading_thread_page', { url: threadUrl });
+          
+          await page.goto(threadUrl, {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000
+          });
+          
+          // Wait for tweets to load
+          await page.waitForSelector('article', { timeout: 10000 });
+          
+          // Extract all tweets in the thread by the same author
+          const threadTweets = await page.$$eval('article', (articles: Element[], authorHandle: string) => {
+            const results = articles
+              .map(article => {
+                const authorEl = article.querySelector('[data-testid="User-Name"]');
+                const authorSpans = authorEl ? Array.from(authorEl.querySelectorAll('span')) : [];
+                const handleSpan = authorSpans.find(span => (span.textContent || '').includes('@'));
+                const handle = handleSpan?.textContent?.trim() || '';
+                
+                // Extract tweet ID from URL
+                const tweetLink = article.querySelector('a[href*="/status/"]');
+                const tweetUrl = tweetLink?.getAttribute('href') || '';
+                const tweetId = tweetUrl.split('/status/')[1]?.split('?')[0] || '';
+                
+                // Check if this is a reply to determine thread structure
+                const isReply = article.querySelector('[data-testid="tweet"] a[href*="/status/"]');
+                
+                // Direct handle comparison
+                const isOriginalAuthor = handle === authorHandle;
+
+                return {
+                  id: tweetId,
+                  handle,
+                  isReply: !!isReply,
+                  isOriginalAuthor,
+                  debug: {
+                    handle,
+                    authorHandle,
+                    authorMatch: isOriginalAuthor,
+                    tweetId
+                  }
+                };
+              })
+              .filter(t => {
+                const include = t.isOriginalAuthor && t.id;
+                console.log('Thread tweet filter:', {
+                  id: t.id,
+                  include,
+                  ...t.debug
+                });
+                return include;
+              })
+              .map((t, index) => ({
+                id: t.id,
+                position: index + 1,
+                debug: t.debug
+              }));
+
+            return {
+              tweets: results,
+              debug: {
+                totalArticles: articles.length,
+                filteredCount: results.length,
+                authorHandle
+              }
+            };
+          }, authorHandle);
+
+          // Add all thread tweets to collection set
+          threadTweets.tweets.forEach((t: { id: string }) => threadTweetsToCollect.add(t.id));
+          
+          if (threadTweets.tweets.length > 1) {
+            log('collection', 'thread_found', {
+              threadId: tweet.id,
+              tweetCount: threadTweets.tweets.length,
+              tweets: threadTweets.tweets
+            });
+          }
+        } catch (error) {
+          logError('collection', 'thread_extraction_failed', error, {
+            tweetId: tweet.id,
+            conversationId: tweet.conversation_id
+          });
+        }
+      }
+    }
+
+    // Second pass: collect all identified thread tweets
+    log('collection', 'thread_tweets_collection_start', { count: threadTweetsToCollect.size });
+    
+    for (const tweetId of threadTweetsToCollect) {
+      if (!await tweetExists(tweetId)) {
+        try {
+          // Navigate to tweet page
+          const tweetUrl = `https://twitter.com/i/status/${tweetId}`;
+          await page.goto(tweetUrl, {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000
+          });
+          
+          // Wait for tweet to load
+          await page.waitForSelector('article', { timeout: 10000 });
+          
+          // Extract tweet data
+          const threadTweetData = await page.$$eval('article', (articles: Element[], now: number) => {
+            const article = articles[0];  // We only need the first article for the specific tweet
+            
+            // Helper to extract tweet ID from URL
+            function extractTweetId(url: string): string | null {
+              const match = url.match(/\/status\/(\d+)/);
+              return match ? match[1] : null;
+            }
+
+            const tweetUrl = article.querySelector('a[href*="/status/"]')?.getAttribute('href') || '';
+            const tweetId = extractTweetId(tweetUrl) || '';
+            
+            // Get tweet timestamp
+            const timestampEl = article.querySelector('time');
+            const tweetTimestamp = timestampEl?.getAttribute('datetime') || new Date().toISOString();
+
+            // Get the main tweet text content
+            const tweetTextEls = article.querySelectorAll('[data-testid="tweetText"]');
+            const textContent = Array.from(tweetTextEls)
+              .map(el => el.textContent || '')
+              .join('\n\n')
+              .trim();
+
+            // Get author info
+            const authorEl = article.querySelector('[data-testid="User-Name"]');
+            const authorSpans = authorEl ? Array.from(authorEl.querySelectorAll('span')) : [];
+            const handleSpan = authorSpans.find(span => (span.textContent || '').includes('@'));
+            const displayName = authorSpans[0]?.textContent || '';
+            const handle = handleSpan?.textContent || '';
+
+            // Extract media elements
+            const mediaElements = {
+              images: Array.from(article.querySelectorAll('img[src*="pbs.twimg.com/media"]'))
+                .map(img => ({
+                  url: (img as HTMLImageElement).src.split('?')[0]
+                })),
+              videos: Array.from(article.querySelectorAll('video[src*="video.twimg.com"], div[data-testid="videoPlayer"]'))
+                .map(video => {
+                  if (video instanceof HTMLVideoElement) {
+                    return { url: video.src };
+                  } else {
+                    const source = video.querySelector('source');
+                    return { url: source?.src || '' };
+                  }
+                })
+                .filter(v => v.url),
+              gifs: Array.from(article.querySelectorAll('video[poster*="tweet_video_thumb"]'))
+                .map(gif => ({
+                  url: (gif as HTMLVideoElement).src
+                }))
+            };
+            
+            return {
+              id: tweetId,
+              html: article.innerHTML || '',
+              text_content: textContent,
+              display_name: displayName,
+              handle: handle,
+              author: handle ? `${displayName} ${handle}` : displayName,
+              created_at: tweetTimestamp,
+              like_order: now - threadTweetsToCollect.size,  // Decrement by thread position
+              is_quote_tweet: false,
+              has_media: mediaElements.images.length > 0 || mediaElements.videos.length > 0 || mediaElements.gifs.length > 0,
+              has_links: false,
+              links: [],
+              is_deleted: false,
+              card_type: null,
+              card_data: null,
+              metrics: {
+                replies: '0',
+                retweets: '0',
+                likes: '0',
+                views: '0'
+              },
+              _media: mediaElements
+            };
+          }, Date.now());
+          
+          // Insert thread tweet if it doesn't exist
+          if (threadTweetData && !await tweetExists(threadTweetData.id)) {
+            await insertTweet(threadTweetData);
+            log('collection', 'thread_tweet_inserted', { tweetId: threadTweetData.id });
+
+            // Process media for thread tweet
+            if (threadTweetData._media) {
+              const mediaItems: Array<{ tweetId: string; url: string; mediaType: string }> = [];
+              
+              // Collect images
+              threadTweetData._media.images.forEach((image: { url: string }) => {
+                mediaItems.push({ tweetId: threadTweetData.id, url: image.url, mediaType: 'image' });
+              });
+
+              // Collect videos
+              threadTweetData._media.videos.forEach((video: { url: string }) => {
+                mediaItems.push({ tweetId: threadTweetData.id, url: video.url, mediaType: 'video' });
+              });
+
+              // Collect GIFs
+              threadTweetData._media.gifs.forEach((gif: { url: string }) => {
+                mediaItems.push({ tweetId: threadTweetData.id, url: gif.url, mediaType: 'gif' });
+              });
+
+              // Process media items
+              if (mediaItems.length > 0) {
+                await processMediaItems(mediaItems);
+              }
+            }
+          }
+        } catch (error) {
+          logError('collection', 'thread_tweet_collection_failed', error, { tweetId });
+        }
+      }
+    }
+    
+    // Now that all tweets are collected, establish thread relationships
+    log('collection', 'thread_relationships_start');
+    
+    for (const tweet of tweets) {
+      if (tweet.conversation_id && tweet.author) {
+        const authorHandle = tweet.author.split(' ').pop()?.trim() || '';
+        
+        try {
+          // Navigate to the conversation/thread view
+          const threadUrl = `https://twitter.com/i/status/${tweet.conversation_id}`;
+          await page.goto(threadUrl, {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000
+          });
+          
+          // Wait for tweets to load
+          await page.waitForSelector('article', { timeout: 10000 });
+          
+          // Extract all tweets in the thread by the same author
+          const threadTweets = await page.$$eval('article', (articles: Element[], authorHandle: string) => {
+            const results = articles
+              .map(article => {
+                const authorEl = article.querySelector('[data-testid="User-Name"]');
+                const authorSpans = authorEl ? Array.from(authorEl.querySelectorAll('span')) : [];
+                const handleSpan = authorSpans.find(span => (span.textContent || '').includes('@'));
+                const handle = handleSpan?.textContent?.trim() || '';
+                
+                // Extract tweet ID from URL
+                const tweetLink = article.querySelector('a[href*="/status/"]');
+                const tweetUrl = tweetLink?.getAttribute('href') || '';
+                const tweetId = tweetUrl.split('/status/')[1]?.split('?')[0] || '';
+                
+                // Direct handle comparison
+                const isOriginalAuthor = handle === authorHandle;
+
+                return {
+                  id: tweetId,
+                  handle,
+                  isOriginalAuthor,
+                  debug: {
+                    handle,
+                    authorHandle,
+                    authorMatch: isOriginalAuthor,
+                    tweetId
+                  }
+                };
+              })
+              .filter(t => {
+                const include = t.isOriginalAuthor && t.id;
+                return include;
+              })
+              .map((t, index) => ({
+                id: t.id,
+                position: index + 1,
+                debug: t.debug
+              }));
+
+            return {
+              tweets: results,
+              debug: {
+                totalArticles: articles.length,
+                filteredCount: results.length,
+                authorHandle
+              }
+            };
+          }, authorHandle);
+
+          // If we found thread tweets, process them
+          if (threadTweets.tweets.length > 1) {
+            const threadId = tweet.id;
+            
+            // First verify all tweets exist in the database
+            const allTweetsExist = await Promise.all(
+              threadTweets.tweets.map(async (t: { id: string }) => await tweetExists(t.id))
+            );
+            
+            if (allTweetsExist.every(exists => exists)) {
+              // Mark the first tweet as thread start and update length
+              await updateThreadMetadata(threadId, threadTweets.tweets.length);
+              log('thread_debug', 'thread_metadata_updated', {
+                threadId,
+                length: threadTweets.tweets.length
+              });
+              
+              // Insert thread relationships
+              for (const threadTweet of threadTweets.tweets) {
+                await insertThreadTweet(threadId, threadTweet.id, threadTweet.position);
+                log('thread_debug', 'thread_relationship_inserted', {
+                  threadId,
+                  tweetId: threadTweet.id,
+                  position: threadTweet.position
+                });
+              }
+            } else {
+              log('thread_debug', 'thread_relationship_skipped', {
+                threadId,
+                reason: 'not_all_tweets_exist',
+                tweets: threadTweets.tweets.map((t: { id: string }, i: number) => ({
+                  id: t.id,
+                  exists: allTweetsExist[i]
+                }))
+              });
+            }
+          }
+        } catch (error) {
+          logError('collection', 'thread_relationship_failed', error, {
+            tweetId: tweet.id,
+            conversationId: tweet.conversation_id
+          });
+        }
+      }
+    }
+    
+    log('collection', 'thread_relationships_complete');
+
+    // Finally, process media
     const mediaItems: Array<{ tweetId: string; url: string; mediaType: string }> = [];
     
     for (const tweet of tweets) {

@@ -518,12 +518,14 @@ export async function getTweets(query: string, filters: any = {}) {
   const results = await db.all(`
     SELECT t.*, 
       GROUP_CONCAT(l.original_url) as original_urls,
-      GROUP_CONCAT(l.resolved_url) as resolved_urls
+      GROUP_CONCAT(l.resolved_url) as resolved_urls,
+      t.is_thread_start,
+      t.thread_length
     FROM tweets t
     LEFT JOIN links l ON t.id = l.tweet_id
     ${whereClause}
     GROUP BY t.id
-    ORDER BY like_order DESC
+    ORDER BY t.like_order DESC
     LIMIT 50
   `, params);
 
@@ -537,7 +539,9 @@ export async function getTweets(query: string, filters: any = {}) {
     is_quote_tweet: !!tweet.is_quote_tweet,
     has_media: !!tweet.has_media,
     has_links: !!tweet.has_links,
-    is_deleted: !!tweet.is_deleted
+    is_deleted: !!tweet.is_deleted,
+    is_thread_start: !!tweet.is_thread_start,
+    thread_length: tweet.thread_length || null
   }));
 }
 

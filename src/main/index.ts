@@ -119,6 +119,17 @@ function setupIPC() {
       return 'data:image/svg+xml;base64,' + Buffer.from(errorSvg, 'utf-8').toString('base64');
     }
   });
+
+  // Add handler for getting thread tweets
+  ipcMain.handle('get-thread-tweets', async (event, threadId) => {
+    try {
+      const { getThreadTweets } = await import('./storage/db');
+      return await getThreadTweets(threadId);
+    } catch (error) {
+      console.error('Error getting thread tweets:', error);
+      throw error;
+    }
+  });
 }
 
 const gotTheLock = app.requestSingleInstanceLock();
